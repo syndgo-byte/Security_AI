@@ -1,0 +1,10 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.venv/
+.env
+security.db
+.backups/
+backup-claude/
+_backup/
+.handoff/

@@ -1,0 +1,15 @@
+[project]
+name = "security"
+version = "0.1.0"
+description = "MCP Hub 공통 모듈 — 전체 서비스 취약점 진단 · 승인 후 수정 조치"
+requires-python = ">=3.11"
+dependencies = ["fastapi>=0.110", "uvicorn>=0.29"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[tool.setuptools]
+packages = ["security", "security.scanners"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
