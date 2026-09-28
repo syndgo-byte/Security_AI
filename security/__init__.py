@@ -1,6 +1,7 @@
 """security — 내 전체 서비스 취약점 진단 · 수정 조치 모듈 (MCP Hub 공통 모듈).
 
 진단 4종: 코드 취약점(SAST) · 의존성 CVE · 비밀정보 노출 · 설정/개인정보 점검.
+AI (security/ai): 최신 위협 수집 · 코드 검토 · 오탐 판정/수정안 — Claude · Gemini · OpenAI 중 키가 있는 모델 모두 사용.
 수정 조치: 진단마다 줄 단위 패치(diff)를 만들고, 승인해야만 대상 저장소에 반영(백업 · 되돌리기 가능).
 
 허브는 이 파일을 단독으로 불러와 manifest()만 호출하므로, 여기에는 상대 import를 두지 않는다.
@@ -17,7 +18,7 @@ def manifest() -> dict:
         "id": "security",
         "kind": "module",
         "version": __version__,
-        "description": "전체 서비스 취약점 진단 (SAST · 의존성 CVE · 비밀정보 · 설정/개인정보) 및 승인 후 수정 조치",
+        "description": "전체 서비스 취약점 진단 (SAST · 의존성 CVE · 비밀정보 · 설정/개인정보 · AI 위협 수집/검토) 및 승인 후 수정 조치",
         "provides": ["security.scan", "security.remediation"],
         "requires": [],
         "tools": [
@@ -28,6 +29,12 @@ def manifest() -> dict:
             {"name": "security.apply_fix", "description": "승인된 수정 패치를 대상 저장소에 적용 (백업 후)",
              "auth_required": "user", "billing_model": "free"},
             {"name": "security.rollback_fix", "description": "적용한 수정 패치를 백업으로 되돌림",
+             "auth_required": "user", "billing_model": "free"},
+            {"name": "security.ai_intel", "description": "최신 위협 수집 (CISA KEV · NVD) 후 AI 가 서비스 의존성과 대조",
+             "auth_required": "service", "billing_model": "free"},
+            {"name": "security.ai_review", "description": "여러 AI 모델로 코드 검토 (코드 전송 동의 필요)",
+             "auth_required": "user", "billing_model": "free"},
+            {"name": "security.ai_triage", "description": "AI 다수결 오탐 판정 · 수정안 작성 (승인 후 적용)",
              "auth_required": "user", "billing_model": "free"},
         ],
         "license": {

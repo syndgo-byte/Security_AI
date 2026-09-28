@@ -20,6 +20,7 @@ create table if not exists findings(
   first_seen text, last_seen text, approved_by text, applied_at text, backup_dir text, applied_hash text);
 create index if not exists ix_findings_service on findings(service);
 """
+AI_COLUMNS = ("ai_verdict", "ai_note", "ai_models", "ai_fix")   # AI 판정 · 수정안. 재진단해도 유지
 
 
 def now() -> str:
@@ -34,6 +35,10 @@ def connect() -> sqlite3.Connection:
     con = sqlite3.connect(db_path())
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    have = {r["name"] for r in con.execute("pragma table_info(findings)")}
+    for col in AI_COLUMNS:
+        if col not in have:
+            con.execute(f"alter table findings add column {col} text")
     return con
 
 
@@ -44,8 +49,9 @@ def start_scan(con, services: list[str], offline: bool) -> str:
     return sid
 
 
-def save_findings(con, scan_id: str, service: str, findings: list[Finding]) -> None:
-    """이번 진단에 나온 것은 upsert, 이번에 안 나온 open 항목은 해결된 것으로 보고 지운다."""
+def save_findings(con, scan_id: str, service: str, findings: list[Finding],
+                  categories: tuple[str, ...] | None = None) -> None:
+    """이번 진단에 나온 것은 upsert, 이번에 돌린 분류(categories)에서 안 나온 open 항목은 해결된 것으로 보고 지운다."""
     ts = now()
     seen = set()
     for f in findings:
@@ -59,7 +65,9 @@ def save_findings(con, scan_id: str, service: str, findings: list[Finding]) -> N
                          status=case when findings.status='rolled_back' then 'open' else findings.status end""",
                     (f.id, scan_id, service, f.category, f.rule, f.severity, f.title, f.file, f.line, f.detail,
                      f.evidence, fix, ts, ts))
-    rows = con.execute("select id from findings where service=? and status='open'", (service,)).fetchall()
+    rows = con.execute("select id, category from findings where service=? and status='open'", (service,)).fetchall()
+    if categories is not None:
+        rows = [r for r in rows if r["category"] in categories]
     stale = [r["id"] for r in rows if r["id"] not in seen]
     con.executemany("delete from findings where id=?", [(i,) for i in stale])
 
@@ -69,18 +77,27 @@ def finish_scan(con, scan_id: str, counts: dict) -> None:
     con.commit()
 
 
-def row_fix(row) -> Fix | None:
-    if not row["fix"]:
+def _load_fix(raw) -> Fix | None:
+    if not raw:
         return None
-    d = json.loads(row["fix"])
+    d = json.loads(raw)
     return Fix(d["description"], [Edit(**e) for e in d["edits"]])
+
+
+def row_fix(row) -> Fix | None:
+    """적용할 수정: 규칙 기반 자동 수정이 있으면 그것, 없으면 AI 수정안, 둘 다 없으면 안내만."""
+    fix = _load_fix(row["fix"])
+    if fix and fix.automatic:
+        return fix
+    return _load_fix(row["ai_fix"]) or fix
 
 
 def to_dict(row) -> dict:
     d = dict(row)
     fix = row_fix(row)
-    d["fix"] = {"description": fix.description, "automatic": fix.automatic,
+    d["fix"] = {"description": fix.description, "automatic": fix.automatic, "by_ai": fix.description.startswith("AI 제안"),
                 "files": sorted({e.file for e in fix.edits})} if fix else None
+    d.pop("ai_fix", None)
     return d
 
 

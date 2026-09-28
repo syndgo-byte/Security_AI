@@ -78,3 +78,45 @@ def dismiss(fid: str, reason: str = ""):
 @app.get("/summary")
 def summary():
     return store.summary(_con())
+
+
+# ── AI ─────────────────────────────────────────────────────────────
+def _ai(fn, *args):
+    from .ai.common import ConsentError
+    from .ai.providers import AIError
+    try:
+        return fn(*args)
+    except ConsentError as e:
+        raise HTTPException(403, str(e)) from e
+    except AIError as e:
+        raise HTTPException(503, str(e)) from e
+
+
+def _target_or_404(service: str | None) -> dict:
+    t = load_targets()
+    if service and service not in t:
+        raise HTTPException(404, f"대상에 없는 서비스: {service}")
+    return t
+
+
+@app.get("/ai/status")
+def ai_status():
+    from .ai import providers
+    return providers.status()
+
+
+@app.post("/ai/intel")
+def ai_intel(service: str | None = None, days: int = Query(14, ge=1, le=120)):
+    return _ai(engine.run_intel, _target_or_404(service), service, days)
+
+
+@app.post("/ai/review")
+def ai_review(service: str | None = None, allow_code: bool = False, max_files: int = Query(15, ge=1, le=100)):
+    return _ai(engine.run_review, _target_or_404(service), service, allow_code, max_files)
+
+
+@app.post("/ai/triage")
+def ai_triage(service: str | None = None, allow_code: bool = False, limit: int = Query(30, ge=1, le=200),
+              redo: bool = False):
+    from .ai import triage
+    return _ai(triage.run, _con(), _target_or_404(service), service, allow_code, limit, redo)

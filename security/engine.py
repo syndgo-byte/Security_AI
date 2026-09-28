@@ -34,18 +34,50 @@ def report_to_hub(service: str, counts: dict) -> None:
         pass
 
 
-def run(targets: dict[str, Path], only: str | None = None, offline: bool = False) -> dict:
-    chosen = {k: v for k, v in targets.items() if not only or k == only}
+RULE_CATEGORIES = ("sast", "secrets", "config", "deps")
+
+
+def _count(findings) -> dict:
+    counts = {s: 0 for s in ("critical", "high", "medium", "low")}
+    for f in findings:
+        counts[f.severity] += 1
+    return counts
+
+
+def _save_all(per_service: dict[str, list], categories: tuple[str, ...], offline: bool = False) -> dict:
     con = store.connect()
-    scan_id = store.start_scan(con, list(chosen), offline)
+    scan_id = store.start_scan(con, list(per_service), offline)
     result = {}
-    for service, root in chosen.items():
-        findings = scan_service(service, root, offline)
-        store.save_findings(con, scan_id, service, findings)
-        counts = {s: 0 for s in ("critical", "high", "medium", "low")}
-        for f in findings:
-            counts[f.severity] += 1
-        result[service] = counts
-        report_to_hub(service, counts)
+    for service, findings in per_service.items():
+        store.save_findings(con, scan_id, service, findings, categories)
+        result[service] = _count(findings)
+        report_to_hub(service, result[service])
     store.finish_scan(con, scan_id, result)
     return {"scan_id": scan_id, "services": result}
+
+
+def run(targets: dict[str, Path], only: str | None = None, offline: bool = False) -> dict:
+    chosen = {k: v for k, v in targets.items() if not only or k == only}
+    return _save_all({s: scan_service(s, r, offline) for s, r in chosen.items()}, RULE_CATEGORIES, offline)
+
+
+def run_intel(targets: dict[str, Path], only: str | None = None, days: int = 14) -> dict:
+    """최신 위협 수집 (CISA KEV · NVD → AI 가 서비스 의존성과 대조)."""
+    from .ai import intel
+    per_service, errors = intel.scan(targets, only, days)
+    return {**_save_all(per_service, ("intel",)), "errors": errors}
+
+
+def run_review(targets: dict[str, Path], only: str | None = None, allow_code: bool = False,
+               max_files: int = 15) -> dict:
+    """AI 코드 검토 (코드 전송 동의 필요)."""
+    from .ai import review
+    per_service, errors = {}, []
+    for s, r in targets.items():
+        if only and s != only:
+            continue
+        found, errs = review.scan(s, r, allow_code, max_files)
+        errors += [f"{s} {e}" for e in errs]
+        if found or not errs:   # 모델 호출이 전부 실패했으면 이전 결과를 지우지 않는다
+            per_service[s] = found
+    return {**_save_all(per_service, ("ai",)), "errors": errors}
