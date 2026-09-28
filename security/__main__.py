@@ -64,7 +64,7 @@ def main(argv=None) -> int:
                 print("  오류:", e)
         elif args.cmd == "ai-status":
             for name, s in providers.status().items():
-                print(f"{name:7} {'사용' if s['enabled'] else '키 없음':6} {s['model']}")
+                print(f"{name:7} {s['state']:8} {s['model']}")
         elif args.cmd == "triage":
             r = triage.run(con, load_targets(), args.service, args.allow_code, args.limit, args.redo)
             print(f"판정 {r['checked']}건: 실제 {r['true_positive']} · 오탐 {r['false_positive']} · 불확실 {r['uncertain']}"

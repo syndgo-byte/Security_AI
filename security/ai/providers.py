@@ -1,37 +1,68 @@
-"""모델 공통 호출. 표준 라이브러리(urllib)만 쓰고, 응답은 JSON 객체로 받는다."""
+"""모델 공통 호출. Claude Code CLI(Opus 5.5, 추가 비용 없음) · OpenAI · Gemini 를 모두 지원."""
 from __future__ import annotations
 
 import json
 import os
 import re
+import subprocess
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 
 TIMEOUT = 120
+
+
+ENV_FILE = Path(__file__).resolve().parents[2] / ".env"   # Security/.env (git 제외)
+CLAUDE_BIN = (Path.home() / ".vscode" / "extensions").glob("anthropic.claude-code-*-win32-x64/resources/native-binary/claude.exe")
+CLAUDE_BIN = next(CLAUDE_BIN, None)
+
+
+def load_env_file(path: Path = ENV_FILE) -> None:
+    """Security/.env 의 KEY=VALUE 를 환경변수로 (이미 설정된 값은 덮지 않음)."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            v = v.strip().strip('"').strip("'")
+            if v:
+                os.environ.setdefault(k.strip(), v)
 
 
 @dataclass
 class Provider:
     name: str
-    key_envs: tuple[str, ...]
-    model_env: str
+    model_env: str | None
     default_model: str
+    key_envs: tuple[str, ...] = ()
+    key_prefix: str = ""
 
     @property
     def key(self) -> str | None:
+        if not self.key_envs:
+            return None
         return next((os.environ[k] for k in self.key_envs if os.environ.get(k)), None)
 
     @property
+    def key_ok(self) -> bool:
+        if self.name == "claude":
+            return CLAUDE_BIN and CLAUDE_BIN.exists()
+        return bool(self.key) and self.key.startswith(self.key_prefix)
+
+    @property
     def model(self) -> str:
-        return os.environ.get(self.model_env) or self.default_model
+        if self.model_env:
+            return os.environ.get(self.model_env) or self.default_model
+        return self.default_model
 
 
 PROVIDERS = {
-    "claude": Provider("claude", ("ANTHROPIC_API_KEY",), "SECURITY_AI_CLAUDE_MODEL", "claude-sonnet-5"),
-    "gemini": Provider("gemini", ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "SECURITY_AI_GEMINI_MODEL", "gemini-2.5-pro"),
-    "openai": Provider("openai", ("OPENAI_API_KEY",), "SECURITY_AI_OPENAI_MODEL", "gpt-5"),
+    "claude": Provider("claude", None, "claude-opus-5-5"),   # Claude Code CLI 사용, 키 불필요
+    "gemini": Provider("gemini", "SECURITY_AI_GEMINI_MODEL", "gemini-2.5-pro", ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "AIza"),
+    "openai": Provider("openai", "SECURITY_AI_OPENAI_MODEL", "gpt-5", ("OPENAI_API_KEY",), "sk-"),
 }
 
 
@@ -40,13 +71,17 @@ class AIError(Exception):
 
 
 def available() -> list[Provider]:
-    """키가 있는 모델. SECURITY_AI_PROVIDERS=claude,gemini 처럼 좁힐 수 있다."""
+    """형식이 맞는 키가 있는 모델. SECURITY_AI_PROVIDERS=claude,gemini 처럼 좁힐 수 있다."""
+    load_env_file()
     only = {s.strip() for s in os.environ.get("SECURITY_AI_PROVIDERS", "").split(",") if s.strip()}
-    return [p for n, p in PROVIDERS.items() if p.key and (not only or n in only)]
+    return [p for n, p in PROVIDERS.items() if p.key_ok and (not only or n in only)]
 
 
 def status() -> dict:
-    return {n: {"enabled": p in available(), "model": p.model} for n, p in PROVIDERS.items()}
+    enabled = available()
+    return {n: {"enabled": p in enabled, "model": p.model,
+                "state": "사용" if p in enabled else "키 형식 오류" if p.key else "키 없음"}
+            for n, p in PROVIDERS.items()}
 
 
 def _post(url: str, body: dict, headers: dict) -> dict:
@@ -67,11 +102,16 @@ def _post(url: str, body: dict, headers: dict) -> dict:
 
 
 def _claude(p: Provider, system: str, prompt: str) -> str:
-    r = _post("https://api.anthropic.com/v1/messages",
-              {"model": p.model, "max_tokens": 8000, "system": system,
-               "messages": [{"role": "user", "content": prompt}]},
-              {"x-api-key": p.key, "anthropic-version": "2023-06-01"})
-    return "".join(b.get("text", "") for b in r.get("content", []) if b.get("type") == "text")
+    try:
+        r = subprocess.run([str(CLAUDE_BIN), "-p", "--model", p.model, "--output-format", "json",
+                           "--system-prompt", system],
+                          input=prompt, capture_output=True, text=True, timeout=180)
+        if r.returncode != 0:
+            raise AIError(f"claude CLI 오류: {r.stderr[:300]}")
+        out = json.loads(r.stdout)
+        return out.get("message", "")
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        raise AIError(str(e)) from e
 
 
 def _openai(p: Provider, system: str, prompt: str) -> str:
