@@ -18,9 +18,15 @@ REQ_RX = re.compile(r"^\s*([A-Za-z0-9_.\-]+)(\[[^\]]*\])?\s*(==|>=|~=|<=|>|<)?\s
 
 
 class Dep:
-    def __init__(self, name, version, ecosystem, file, line, raw, pinned):
+    def __init__(self, name, version, ecosystem, file, line, raw, pinned, op=None):
         self.name, self.version, self.ecosystem = name, version, ecosystem
         self.file, self.line, self.raw, self.pinned = file, line, raw, pinned
+        self.op = "==" if pinned else op
+
+    @property
+    def floor(self) -> bool:
+        """>= 하한만 있는 PyPI 의존성 — 하한 버전을 대신 조회한다 (설치될 수 있는 가장 낮은 버전)."""
+        return self.op == ">=" and bool(self.version) and self.ecosystem == "PyPI"
 
 
 def _requirements(path: Path, rel: str) -> list[Dep]:
@@ -31,7 +37,7 @@ def _requirements(path: Path, rel: str) -> list[Dep]:
             continue
         m = REQ_RX.match(s)
         if m:
-            out.append(Dep(m.group(1), m.group(4), "PyPI", rel, i, raw, m.group(3) == "=="))
+            out.append(Dep(m.group(1), m.group(4), "PyPI", rel, i, raw, m.group(3) == "==", m.group(3)))
     return out
 
 
@@ -47,7 +53,8 @@ def _pyproject(path: Path, rel: str) -> list[Dep]:
         if not m:
             continue
         line = next((i for i, l in enumerate(lines, 1) if f'"{spec}"' in l or f"'{spec}'" in l), 0)
-        out.append(Dep(m.group(1), m.group(4), "PyPI", rel, line, lines[line - 1] if line else spec, m.group(3) == "=="))
+        out.append(Dep(m.group(1), m.group(4), "PyPI", rel, line, lines[line - 1] if line else spec, m.group(3) == "==",
+                       m.group(3)))
     return out
 
 
@@ -120,12 +127,17 @@ def _vkey(v: str):
 def scan(service: str, root: Path, offline: bool = False) -> list[Finding]:
     deps = collect(root)
     out: list[Finding] = []
-    pinned = [d for d in deps if d.version and d.pinned]
+    pinned = [d for d in deps if d.version and (d.pinned or d.floor)]
+    unpinned: dict[str, list[Dep]] = {}
     for d in deps:
         if not d.pinned and d.ecosystem == "PyPI" and d.file.endswith(".txt"):
-            out.append(Finding(service, "deps", "DEPS-UNPINNED", "low", f"버전 미고정 ({d.name})", d.file, d.line,
-                               "배포마다 다른 버전이 설치될 수 있어 취약 버전 여부를 확정할 수 없습니다. lock 파일이나 == 고정을 쓰세요.",
-                               d.raw.strip()))
+            unpinned.setdefault(d.file, []).append(d)
+    for file, ds in unpinned.items():   # 파일당 한 건으로 묶는다
+        names = ", ".join(d.name for d in ds)
+        out.append(Finding(service, "deps", "DEPS-UNPINNED", "low", f"버전 미고정 {len(ds)}개", file, ds[0].line,
+                           "배포마다 다른 버전이 설치될 수 있어 취약 버전 여부를 확정할 수 없습니다. "
+                           "lock 파일(pip freeze > requirements.lock 등)을 두거나 == 로 고정하세요. >= 하한은 CVE 를 따로 조회합니다.",
+                           names[:200]))
     if offline or not pinned:
         return out
     try:
@@ -154,6 +166,16 @@ def scan(service: str, root: Path, offline: bool = False) -> list[Finding]:
         ids = ", ".join(sorted({(v.get("aliases") or [v["id"]])[0] for v in details})[:6])
         summary = next((v.get("summary") for v in details if v.get("summary")), "")
         fix = None
+        if d.floor:   # 실제 설치본은 더 새것일 수 있어 심각도는 medium 까지, 하한을 올리는 수정안
+            sev = "medium" if order.index(sev) < order.index("medium") else sev
+            fix = Fix(f"{d.name} 하한 {d.version} → {target}",
+                      [Edit(d.file, d.line, d.raw, d.raw.replace(f">={d.version}", f">={target}", 1))]) \
+                if target and d.line and f">={d.version}" in d.raw else None
+            out.append(Finding(service, "deps", "DEPS-CVE-FLOOR", sev,
+                               f"{d.name} 허용 하한 {d.version} 에 알려진 취약점 {len(details)}건", d.file, d.line,
+                               f"{ids}. {summary} (하한 이상 아무 버전이나 설치될 수 있어, 낮은 버전이 깔리면 취약)".strip(),
+                               d.raw.strip(), fix or Fix(f"수동 조치: {d.name} 하한 올리기" + (f" (≥ {target})" if target else ""))))
+            continue
         if target and d.line:
             if d.ecosystem == "PyPI" and f"=={d.version}" in d.raw:
                 fix = Fix(f"{d.name} {d.version} → {target}",

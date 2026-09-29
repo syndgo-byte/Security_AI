@@ -67,7 +67,9 @@ def _python(service: str, path: Path, rel: str) -> list[Finding]:
                     "허용 출처를 실제 프런트 도메인 목록으로 좁히세요." +
                     (" 자격증명까지 허용하면 다른 사이트가 로그인 세션으로 API 를 호출할 수 있습니다." if creds else ""))
         elif last == "set_cookie":
-            missing = [k for k in ("secure", "httponly") if not is_true(kwarg(node, k))]
+            # 없거나 상수 False 일 때만. secure=request.url.scheme == "https" 같은 조건식은 의도된 설정으로 본다
+            missing = [k for k in ("secure", "httponly") if kwarg(node, k) is None
+                       or (isinstance(kwarg(node, k), ast.Constant) and not kwarg(node, k).value)]
             if missing and not any(k.arg is None for k in node.keywords):
                 add(node.lineno, "CONFIG-COOKIE-FLAGS", "medium", f"쿠키 보안 속성 누락 ({', '.join(missing)})",
                     "세션 · 인증 쿠키라면 secure=True, httponly=True, samesite='lax' 이상을 지정하세요.")

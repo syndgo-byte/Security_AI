@@ -32,10 +32,41 @@ def _is_dynamic_sql(node) -> bool:
     return False
 
 
+def _is_placeholders(node, names: set[str]) -> bool:
+    """",".join("?" * n) · ", ".join(["%s"] * n) 처럼 자리표시자만 만드는 식, 또는 그걸 담은 변수."""
+    if isinstance(node, ast.Name):
+        return node.id in names
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "join"
+            and isinstance(node.func.value, ast.Constant) and node.args):
+        return False
+    arg = node.args[0]
+    if isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Mult):
+        side = arg.left if isinstance(arg.left, (ast.Constant, ast.List)) else arg.right
+        if isinstance(side, ast.List) and len(side.elts) == 1:
+            side = side.elts[0]
+        return isinstance(side, ast.Constant) and side.value in ("?", "%s")
+    return False
+
+
+def _placeholder_names(tree) -> set[str]:
+    names: set[str] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name) \
+                and _is_placeholders(n.value, set()):
+            names.add(n.targets[0].id)
+    return names
+
+
+def _only_placeholders(node, names: set[str]) -> bool:
+    return isinstance(node, ast.JoinedStr) and all(
+        _is_placeholders(v.value, names) for v in node.values if isinstance(v, ast.FormattedValue))
+
+
 def _python(service: str, path: Path, rel: str) -> list[Finding]:
     tree = parse_python(path)
     if tree is None:
         return []
+    placeholders = _placeholder_names(tree)
     lines = read_lines(path)
     out: list[Finding] = []
 
@@ -63,7 +94,8 @@ def _python(service: str, path: Path, rel: str) -> list[Finding]:
             add(node, "SAST-PY-YAML", "high", "yaml.load (안전하지 않은 로더)",
                 "임의 객체가 생성될 수 있습니다. yaml.safe_load 를 쓰세요.",
                 Fix("yaml.load → yaml.safe_load", [Edit(rel, node.lineno, line, line.replace("yaml.load(", "yaml.safe_load("))]))
-        elif last in SQL_CALLS and node.args and _is_dynamic_sql(node.args[0]):
+        elif last in SQL_CALLS and node.args and _is_dynamic_sql(node.args[0]) \
+                and not (len(node.args) > 1 and _only_placeholders(node.args[0], placeholders)):
             head = ast.unparse(node.args[0]).lstrip("f'\"").upper()
             if head.startswith(("ALTER TABLE", "CREATE TABLE", "CREATE INDEX", "DROP TABLE", "PRAGMA")):
                 add(node, "SAST-PY-SQL-DDL", "low", "동적 DDL (스키마 변경문 조립)",
