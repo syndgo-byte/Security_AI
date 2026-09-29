@@ -1,6 +1,6 @@
 {
   "auth_core": "D:/Vibe_coding/modules/auth_core",
-  "privacy_law": "D:/Vibe_coding/Privacy_Law",
-  "EMSv3": "D:/Vibe_coding/EMS/EMSv3",
+  "privacy_law": "D:/Vibe_coding/modules/Privacy_Law",
+  "EMSv3": "D:/Vibe_coding/services/EMS/EMSv3",
   "mcp_hub": "D:/Vibe_coding/mcp_hub"
 }
