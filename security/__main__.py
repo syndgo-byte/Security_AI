@@ -43,7 +43,7 @@ def main(argv=None) -> int:
     tr.add_argument("--limit", type=int, default=30)
     tr.add_argument("--redo", action="store_true", help="이미 판정한 항목도 다시")
     sub.add_parser("web", help="웹 가벼운 점검 (헤더 · 쿠키 · CORS · HTTPS · 노출 경로 · 인증서)").add_argument("--service")
-    sub.add_parser("auto-fix", help="간단한 항목을 서비스 저장소 새 브랜치에 커밋").add_argument("--service")
+    sub.add_parser("auto-fix", help="간단한 항목 조치안 준비 (허브 관리, 서비스 파일은 안 건드림)").add_argument("--service")
     sub.add_parser("escalations", help="사람에게 넘긴 항목").add_argument("--service")
     wa = sub.add_parser("watch", help="상시 진단 (코드 30분 · 웹 6시간 · 위협 수집 하루)")
     wa.add_argument("--once", action="store_true", help="모든 작업을 한 번만 돌리고 끝")
@@ -65,7 +65,8 @@ def main(argv=None) -> int:
 
         def show(ran):
             for job, r in ran.items():
-                fixed = sum(len(b["fixed"]) for b in r.get("auto_fix", {}).get("branches", {}).values())
+                af = r.get("auto_fix", {})
+                fixed = len(af.get("ready", [])) + sum(len(b["fixed"]) for b in af.get("branches", {}).values())
                 print(f"[{w.status[job]['at']}] {job}: 서비스 {len(r.get('services', {}))}"
                       + (f" · 자동 조치 {fixed}건" if fixed else "") + "".join(f"\n  오류: {e}" for e in r.get("errors", [])))
         if args.once:
@@ -95,13 +96,15 @@ def main(argv=None) -> int:
                 print("  오류:", e)
         elif args.cmd == "auto-fix":
             t = {k: v for k, v in load_targets().items() if not args.service or k == args.service}
-            r = remediate.auto_fix(con, t)
-            for svc, b in r["branches"].items():
-                print(f"{svc:14} {len(b['fixed'])}건 → 브랜치 {b['branch']} ({b['repo']}) — 확인 후 병합하세요")
-            for s in r["skipped"]:
-                print("  건너뜀:", s)
-            if not r["branches"] and not r["skipped"]:
-                print("자동 조치할 항목 없음")
+            r = remediate.auto_remediate(con, t)
+            if r["mode"] == "patch":
+                print(f"조치안 준비 {len(r['ready'])}건 (허브 /security/patches 에서 관리)"
+                      + (f" · 코드가 바뀌어 다시 열림 {len(r['reopened'])}건" if r["reopened"] else ""))
+            else:
+                for svc, b in r["branches"].items():
+                    print(f"{svc:14} {len(b['fixed'])}건 → 브랜치 {b['branch']} ({b['repo']}) — 확인 후 병합하세요")
+                for s in r["skipped"]:
+                    print("  건너뜀:", s)
         elif args.cmd == "escalations":
             for f in store.list_findings(con, service=args.service, status="open", action="escalate"):
                 print(f"{f['id']}  {f['severity']:8} {f['service']:12} {f['category']:7} {f['title']}  {f['file']}:{f['line']}")

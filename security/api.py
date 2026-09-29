@@ -59,9 +59,35 @@ def escalations(service: str | None = None):
 
 @app.post("/auto-fix")
 def auto_fix(service: str | None = None):
-    """정책상 간단한 항목을 서비스 저장소의 새 브랜치에 커밋 (작업 폴더는 안 건드림)."""
+    """정책상 간단한 항목의 조치안 준비 (기본: 허브 관리용 diff, 서비스 파일은 안 건드림)."""
     t = load_targets()
-    return _act(remediate.auto_fix, _con(), {k: v for k, v in t.items() if not service or k == service})
+    return _act(remediate.auto_remediate, _con(), {k: v for k, v in t.items() if not service or k == service})
+
+
+@app.get("/patches")
+def patches(service: str | None = None):
+    """허브가 가져갈 조치안 (상태 ready). 항목마다 diff 포함."""
+    con = _con()
+    rows = con.execute("select * from findings where status='ready'" + (" and service=?" if service else ""),
+                       (service,) if service else ()).fetchall()
+    return [{**store.to_dict(r), "patch": r["patch"]} for r in rows]
+
+
+@app.post("/findings/{fid}/approve")
+def approve(fid: str, approved_by: str = Query(..., min_length=1)):
+    """승인한 수정안을 조치안으로 (허브가 관리). 서비스 파일은 안 건드림."""
+    return _act(remediate.approve, _con(), load_targets(), fid, approved_by)
+
+
+@app.post("/findings/{fid}/cancel")
+def cancel(fid: str):
+    return _act(remediate.cancel, _con(), fid)
+
+
+@app.post("/findings/{fid}/delivered")
+def delivered(fid: str, by: str = Query(..., min_length=1)):
+    """허브가 조치안을 서비스에 반영했음을 알림."""
+    return _act(remediate.mark_delivered, _con(), fid, by)
 
 
 @app.get("/watch")

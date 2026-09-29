@@ -47,7 +47,7 @@ def apply(con, targets: dict[str, Path], fid: str, approved_by: str) -> dict:
     row = get(con, fid)
     if not row:
         raise RemediationError("진단 항목이 없습니다.")
-    if row["status"] != "open":
+    if row["status"] not in ("open", "ready"):
         raise RemediationError(f"이미 처리된 항목입니다 ({row['status']}).")
     if not approved_by.strip():
         raise RemediationError("승인자 이름이 필요합니다.")
@@ -112,6 +112,81 @@ def rollback(con, fid: str) -> dict:
     con.execute("update findings set status='rolled_back' where id=?", (fid,))
     con.commit()
     return {"id": fid, "status": "rolled_back", "files": list(meta["files"])}
+
+
+def prepare_patches(con, targets: dict[str, Path], ids: list[str] | None = None) -> dict:
+    """정책상 auto 인 항목의 조치안(diff)을 만들어 허브가 가져가게 둔다. 서비스 파일 · git 은 읽기만 한다.
+
+    open → ready(조치안 준비됨). 이미 ready 인 것도 다시 계산해, 코드가 바뀌어 안 맞으면 open 으로 되돌린다.
+    """
+    from .policy import decide
+    rows = [r for r in con.execute("select * from findings where status in ('open', 'ready')")
+            if (ids is None or r["id"] in ids) and r["service"] in targets and decide(r) == "auto"]
+    ready, stale = [], []
+    for r in rows:
+        try:
+            patch = render_diff(targets[r["service"]], row_fix(r).edits)
+        except (ValueError, OSError):
+            patch = ""
+        if patch:
+            con.execute("update findings set status='ready', patch=? where id=?", (patch, r["id"]))
+            ready.append(r["id"])
+        elif r["status"] == "ready":
+            con.execute("update findings set status='open', patch=null where id=?", (r["id"],))
+            stale.append(r["id"])
+    con.commit()
+    return {"ready": ready, "reopened": stale}
+
+
+def approve(con, targets: dict[str, Path], fid: str, approved_by: str) -> dict:
+    """사람이 승인한 수정안을 조치안(ready)으로 만든다 — 승인 대기 · 넘김 항목용. 서비스 파일은 안 건드린다."""
+    row = get(con, fid)
+    if not row or row["status"] != "open":
+        raise RemediationError("열린 항목만 승인할 수 있습니다.")
+    if not approved_by.strip():
+        raise RemediationError("승인자 이름이 필요합니다.")
+    fix = row_fix(row)
+    if not fix or not fix.automatic:
+        raise RemediationError("수정안이 없는 항목입니다. 안내에 따라 직접 조치하세요.")
+    if row["service"] not in targets:
+        raise RemediationError(f"대상 경로를 모릅니다: {row['service']}")
+    try:
+        patch = render_diff(targets[row["service"]], fix.edits)
+    except ValueError as e:
+        raise RemediationError(str(e)) from e
+    con.execute("update findings set status='ready', patch=?, approved_by=? where id=?", (patch, approved_by, fid))
+    con.commit()
+    return {"id": fid, "status": "ready"}
+
+
+def cancel(con, fid: str) -> dict:
+    """조치안을 거둬들여 다시 열림으로."""
+    row = get(con, fid)
+    if not row or row["status"] != "ready":
+        raise RemediationError("조치안 준비됨 상태만 취소할 수 있습니다.")
+    con.execute("update findings set status='open', patch=null, approved_by=null where id=?", (fid,))
+    con.commit()
+    return {"id": fid, "status": "open"}
+
+
+def mark_delivered(con, fid: str, by: str) -> dict:
+    """허브가 조치안을 서비스에 반영했다고 알려줄 때. 다음 진단에서 안 나오면 해결로 정리된다."""
+    row = get(con, fid)
+    if not row or row["status"] != "ready":
+        raise RemediationError("조치안 준비됨 상태만 반영 처리할 수 있습니다.")
+    if not by.strip():
+        raise RemediationError("반영한 사람(또는 허브 작업 id)이 필요합니다.")
+    con.execute("update findings set status='delivered', approved_by=?, applied_at=? where id=?", (by, now(), fid))
+    con.commit()
+    return {"id": fid, "status": "delivered"}
+
+
+def auto_remediate(con, targets: dict[str, Path]) -> dict:
+    """상시 진단용 자동 조치. 기본은 허브 관리(조치안만 준비), SECURITY_AUTO_FIX_MODE=branch 면 저장소 브랜치 커밋."""
+    import os
+    if os.environ.get("SECURITY_AUTO_FIX_MODE", "patch") == "branch":
+        return {"mode": "branch", **auto_fix(con, targets)}
+    return {"mode": "patch", **prepare_patches(con, targets)}
 
 
 WORKTREES = ROOT / ".worktrees"

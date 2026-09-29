@@ -96,7 +96,53 @@ def test_policy_env_thresholds(tmp_path, monkeypatch):
     assert policy.decide(yaml_row) == "escalate"
 
 
-# ── 자동 조치 (브랜치) ─────────────────────────────────────────────
+# ── 자동 조치 (허브 관리 조치안) ───────────────────────────────────
+def test_prepare_patches_reads_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECURITY_DB", str(tmp_path / "sec.db"))
+    svc = tmp_path / "svc"
+    svc.mkdir()
+    (svc / "app.py").write_text(APP, encoding="utf-8")
+    engine.run({"svc": svc}, offline=True)
+    con = store.connect()
+
+    r = remediate.auto_remediate(con, {"svc": svc})
+    assert r["mode"] == "patch" and len(r["ready"]) == 1
+    assert (svc / "app.py").read_text(encoding="utf-8") == APP             # 서비스 파일 그대로
+    row = store.get(con, r["ready"][0])
+    assert row["status"] == "ready" and "+    yaml.safe_load(s)" in row["patch"]
+    assert store.to_dict(row)["action"] == "auto" and "patch" not in store.to_dict(row)
+
+    (svc / "app.py").write_text(APP.replace("yaml.load(s)", "yaml.load(s)  # x"), encoding="utf-8")
+    assert remediate.prepare_patches(con, {"svc": svc})["reopened"] == [row["id"]]   # 코드가 바뀌면 다시 열림
+
+    (svc / "app.py").write_text(APP, encoding="utf-8")
+    remediate.prepare_patches(con, {"svc": svc})
+    remediate.mark_delivered(con, row["id"], "hub-job-1")
+    (svc / "app.py").write_text(APP.replace("yaml.load(", "yaml.safe_load("), encoding="utf-8")
+    engine.run({"svc": svc}, offline=True)                                  # 반영 후 재진단 → 해결로 정리
+    assert store.get(store.connect(), row["id"]) is None
+
+
+def test_approve_and_cancel(tmp_path, monkeypatch):
+    monkeypatch.setenv("SECURITY_DB", str(tmp_path / "sec.db"))
+    svc = tmp_path / "svc"
+    svc.mkdir()
+    (svc / "app.py").write_text(APP, encoding="utf-8")
+    engine.run({"svc": svc}, offline=True)
+    con = store.connect()
+    sqli = next(f for f in store.list_findings(con) if f["rule"] == "SAST-PY-SQLI")
+    with pytest.raises(remediate.RemediationError):
+        remediate.approve(con, {"svc": svc}, sqli["id"], "홍길동")       # 수정안 없음
+    yml = next(f for f in store.list_findings(con) if f["rule"] == "SAST-PY-YAML")
+    remediate.approve(con, {"svc": svc}, yml["id"], "홍길동")
+    row = store.get(con, yml["id"])
+    assert row["status"] == "ready" and row["approved_by"] == "홍길동" and row["patch"]
+    assert (svc / "app.py").read_text(encoding="utf-8") == APP
+    remediate.cancel(con, yml["id"])
+    assert store.get(con, yml["id"])["status"] == "open"
+
+
+# ── 자동 조치 (브랜치, SECURITY_AUTO_FIX_MODE=branch) ──────────────
 def git(cwd, *a):
     return subprocess.run(["git", "-C", str(cwd), *a], capture_output=True, text=True, check=True).stdout.strip()
 

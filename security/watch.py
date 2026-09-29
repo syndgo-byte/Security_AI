@@ -3,7 +3,8 @@
 주기 (분): SECURITY_WATCH_CODE_MIN=30 (코드 · 설정 · 비밀값 · 의존성)
            SECURITY_WATCH_WEB_MIN=360 (웹 가벼운 점검)
            SECURITY_WATCH_INTEL_MIN=1440 (최신 위협 수집, AI 사용)
-자동 조치: SECURITY_AUTO_FIX=0 이면 끔 (기본 켬, 서비스 저장소에 브랜치만 만든다)
+자동 조치: SECURITY_AUTO_FIX=0 이면 끔. 기본은 조치안(diff)만 준비해 허브가 관리 — 서비스 파일 · git 은 읽기만.
+           SECURITY_AUTO_FIX_MODE=branch 면 서비스 저장소에 브랜치 커밋.
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ def run_job(job: str) -> dict:
         targets = load_targets()
         r = engine.run(targets)
         if _auto_fix_on():
-            r["auto_fix"] = remediate.auto_fix(store.connect(), targets)
+            r["auto_fix"] = remediate.auto_remediate(store.connect(), targets)
         return r
     if job == "web":
         return engine.run_web(load_sites())

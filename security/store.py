@@ -21,6 +21,10 @@ create table if not exists findings(
 create index if not exists ix_findings_service on findings(service);
 """
 AI_COLUMNS = ("ai_verdict", "ai_note", "ai_models", "ai_fix")   # AI 판정 · 수정안. 재진단해도 유지
+EXTRA_COLUMNS = AI_COLUMNS + ("patch",)                          # patch: 허브가 가져갈 조치안(diff)
+# 상태: open 열림 · ready 조치안 준비됨(허브 관리) · delivered 허브가 반영 · applied 직접 적용 ·
+#       branch 저장소 브랜치 커밋 · rolled_back 되돌림 · dismissed 무시
+PENDING = ("open", "ready")   # 다음 진단에서 안 나오면 해결로 보고 지우는 상태
 
 
 def now() -> str:
@@ -36,7 +40,7 @@ def connect() -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
     have = {r["name"] for r in con.execute("pragma table_info(findings)")}
-    for col in AI_COLUMNS:
+    for col in EXTRA_COLUMNS:
         if col not in have:
             con.execute(f"alter table findings add column {col} text")
     return con
@@ -65,7 +69,8 @@ def save_findings(con, scan_id: str, service: str, findings: list[Finding],
                          status=case when findings.status='rolled_back' then 'open' else findings.status end""",
                     (f.id, scan_id, service, f.category, f.rule, f.severity, f.title, f.file, f.line, f.detail,
                      f.evidence, fix, ts, ts))
-    rows = con.execute("select id, category from findings where service=? and status='open'", (service,)).fetchall()
+    rows = con.execute("select id, category from findings where service=? and status in ('open', 'ready', 'delivered')",
+                       (service,)).fetchall()
     if categories is not None:
         rows = [r for r in rows if r["category"] in categories]
     stale = [r["id"] for r in rows if r["id"] not in seen]
@@ -98,8 +103,9 @@ def to_dict(row) -> dict:
     d["fix"] = {"description": fix.description, "automatic": fix.automatic, "by_ai": fix.description.startswith("AI 제안"),
                 "files": sorted({e.file for e in fix.edits})} if fix else None
     d.pop("ai_fix", None)
+    d.pop("patch", None)
     from .policy import decide
-    d["action"] = decide(row) if row["status"] == "open" else None
+    d["action"] = decide(row) if row["status"] in PENDING else None
     return d
 
 
@@ -125,8 +131,10 @@ def summary(con) -> dict:
     from .policy import decide
     for r in con.execute("select * from findings"):
         s = out.setdefault(r["service"], {"critical": 0, "high": 0, "medium": 0, "low": 0, "open": 0, "escalated": 0,
-                                           "applied": 0, "branch": 0, "dismissed": 0})
-        if r["status"] == "open":
+                                           "ready": 0, "delivered": 0, "applied": 0, "branch": 0, "dismissed": 0})
+        if r["status"] == "ready":
+            s["ready"] += 1
+        if r["status"] in PENDING:
             s[r["severity"]] += 1
             s["open"] += 1
             s["escalated"] += decide(r) == "escalate"

@@ -1,7 +1,7 @@
 # Security_AI
 AI 모델들로 CVE, 개인정보, 웹 등 취약점 수집 및 MCP 허브 연결 후 다른 서비스 전체 점검 및 딸깍 조치
 
-마지막 업데이트: 2026-09-29 18:50
+마지막 업데이트: 2026-09-29 19:07
 
 ## 구성
 - 진단 4종 (`security/scanners/`)
@@ -19,10 +19,11 @@ AI 모델들로 CVE, 개인정보, 웹 등 취약점 수집 및 MCP 허브 연�
   | 구분 | 조건 | 처리 |
   |---|---|---|
   | 넘김 `escalate` | critical, 또는 수정안 없는 high | 사람에게 넘김 (새로 생기면 허브 이벤트로 한 번 보고) |
-  | 자동 `auto` | 규칙 기반 수정이 있고 동작을 안 바꾸는 것 (yaml.safe_load, verify 켜기, .gitignore 등) | 모듈이 바로 조치 |
-  | 승인 `approve` | AI 수정안 · 의존성 업그레이드 · 비밀값 이동 · CORS | 승인 후 적용 |
+  | 자동 `auto` | 규칙 기반 수정이 있고 동작을 안 바꾸는 것 (yaml.safe_load, verify 켜기, .gitignore 등) | 모듈이 조치안을 바로 만들어 허브로 |
+  | 승인 `approve` | AI 수정안 · 의존성 업그레이드 · 비밀값 이동 · CORS | 허브에서 승인하면 조치안으로 |
   | 직접 `manual` | 수정안 없는 medium 이하 | 안내만 |
-- 자동 조치 (`remediate.auto_fix`) — 서비스 저장소에 `security/auto-<서비스>-<시각>` **브랜치만** 만들어 항목마다 커밋. 작업 폴더 · 현재 브랜치는 건드리지 않는다 (git worktree 로 따로 꺼내 고친 뒤 치움). 병합은 사람. git 저장소가 아니면 안 함
+- 조치는 **허브가 관리** (`remediate.prepare_patches`) — 모듈은 서비스 코드를 읽기만 하고 조치안(diff)을 만든다: 열림 → 조치안 준비됨(`ready`, `GET /patches`) → 허브가 반영하면 `delivered` → 다음 진단에서 안 나오면 해결로 정리. 코드가 바뀌어 조치안이 안 맞으면 다시 열림. 서비스 로컬 파일 · git 은 건드리지 않는다
+  (예외: `SECURITY_AUTO_FIX_MODE=branch` 로 켜면 저장소에 `security/auto-*` 브랜치 커밋)
 - 상시 진단 (`security/watch.py`) — 허브에 연결된 서비스는 계속: 코드 30분 · 웹 6시간 · 위협 수집 하루 주기, 코드 진단 뒤 자동 조치
 - 수동 승인 조치 (`security/remediate.py`) — 줄 단위 패치(diff)를 보여주고 **승인해야만** 적용. 적용 전 `.backups/` 에 원본 백업, 이후 파일이 안 바뀌었으면 되돌리기 가능
 - MCP Hub 연동 — `security/__init__.py` 의 `manifest()` 를 허브가 읽어 등록, 허브 웹 '보안 진단' 탭이 `/security` → 8200 으로 호출
@@ -55,7 +56,7 @@ AI 모델: Claude 는 설치된 Claude Code CLI(claude-opus-5-5, 키 불필요),
 NVD 수집이 느리면 `NVD_API_KEY` 를 주면 빨라진다.
 
 API: `GET /ai/status`, `POST /ai/intel?days=`, `POST /ai/review?allow_code=true&service=`, `POST /ai/triage?allow_code=true&service=`,
-`POST /web/scan`, `POST /auto-fix`, `GET /escalations`, `GET /watch`, `GET /findings?action=auto|approve|manual|escalate`
+`POST /web/scan`, `POST /auto-fix`(조치안 준비), `GET /patches`, `POST /findings/{id}/approve|cancel|delivered`, `GET /escalations`, `GET /watch`, `GET /findings?action=auto|approve|manual|escalate`
 
 진단 대상은 `targets.json` (서비스 id → 저장소 경로, 또는 `{"root": 경로, "url": "http://127.0.0.1:8000"}` — url 은 목록도 가능, root 없이 url 만 있으면 웹 점검만). `HUB_URL` 을 주면 허브에 등록된 서비스도 자동으로 대상에 넣고, 심각/높음 결과를 허브 모니터링 이벤트로 보고한다.
 
