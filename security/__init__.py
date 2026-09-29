@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def manifest() -> dict:
     return {
         "id": "security",
-        "kind": "module",
+        "kind": "ops",  # 관리 서비스: 모든 서비스를 점검 (허브 위, 3D 관제판에서는 달 · 태양)
         "version": __version__,
         "description": "전체 서비스 취약점 진단 (SAST · 의존성 CVE · 비밀정보 · 설정/개인정보 · AI 위협 수집/검토) 및 승인 후 수정 조치",
         "provides": ["security.scan", "security.remediation", "security.watch"],

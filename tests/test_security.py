@@ -47,7 +47,7 @@ def rules(findings):
 
 def test_manifest_contract():
     m = manifest()
-    assert m["id"] == "security" and m["kind"] == "module"
+    assert m["id"] == "security" and m["kind"] == "ops"
     assert m["source"]["entry"] == "security/__init__.py"
 
 
