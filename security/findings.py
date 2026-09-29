@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 SEVERITIES = ("critical", "high", "medium", "low")
-CATEGORIES = ("sast", "deps", "secrets", "config")
+CATEGORIES = ("sast", "deps", "secrets", "config", "web")
 
 
 @dataclass

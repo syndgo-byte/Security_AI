@@ -109,7 +109,9 @@ def _claude(p: Provider, system: str, prompt: str) -> str:
         if r.returncode != 0:
             raise AIError(f"claude CLI 오류: {r.stderr[:300]}")
         out = json.loads(r.stdout)
-        return out.get("message", "")
+        if out.get("is_error"):
+            raise AIError(f"claude CLI 오류: {str(out.get('result'))[:300]}")
+        return out.get("result", "")
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         raise AIError(str(e)) from e
 
@@ -153,7 +155,7 @@ def ask_all(system: str, prompt: str) -> dict[str, dict]:
     """키가 있는 모든 모델에 동시에 묻는다. 실패한 모델은 {"error": ...} 로 돌려준다."""
     providers = available()
     if not providers:
-        raise AIError("사용할 AI 모델이 없습니다. ANTHROPIC_API_KEY · GEMINI_API_KEY · OPENAI_API_KEY 중 하나 이상을 설정하세요.")
+        raise AIError("사용할 AI 모델이 없습니다. Claude Code CLI 를 설치하거나 GEMINI_API_KEY · OPENAI_API_KEY 를 설정하세요.")
 
     def one(p):
         try:

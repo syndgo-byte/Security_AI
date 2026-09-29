@@ -98,6 +98,8 @@ def to_dict(row) -> dict:
     d["fix"] = {"description": fix.description, "automatic": fix.automatic, "by_ai": fix.description.startswith("AI 제안"),
                 "files": sorted({e.file for e in fix.edits})} if fix else None
     d.pop("ai_fix", None)
+    from .policy import decide
+    d["action"] = decide(row) if row["status"] == "open" else None
     return d
 
 
@@ -110,7 +112,8 @@ def list_findings(con, **filters) -> list[dict]:
     sql = "select * from findings" + (" where " + " and ".join(where) if where else "")
     sql += (" order by case severity when 'critical' then 0 when 'high' then 1 when 'medium' then 2 else 3 end,"
             " service, file, line")
-    return [to_dict(r) for r in con.execute(sql, args)]
+    out = [to_dict(r) for r in con.execute(sql, args)]
+    return [d for d in out if d["action"] == filters["action"]] if filters.get("action") else out
 
 
 def get(con, fid: str):
@@ -119,13 +122,15 @@ def get(con, fid: str):
 
 def summary(con) -> dict:
     out: dict = {}
-    for r in con.execute("select service, severity, status, count(*) n from findings group by 1,2,3"):
-        s = out.setdefault(r["service"], {"critical": 0, "high": 0, "medium": 0, "low": 0,
-                                           "open": 0, "applied": 0, "dismissed": 0})
+    from .policy import decide
+    for r in con.execute("select * from findings"):
+        s = out.setdefault(r["service"], {"critical": 0, "high": 0, "medium": 0, "low": 0, "open": 0, "escalated": 0,
+                                           "applied": 0, "branch": 0, "dismissed": 0})
         if r["status"] == "open":
-            s[r["severity"]] += r["n"]
-            s["open"] += r["n"]
+            s[r["severity"]] += 1
+            s["open"] += 1
+            s["escalated"] += decide(r) == "escalate"
         elif r["status"] in s:
-            s[r["status"]] += r["n"]
+            s[r["status"]] += 1
     last = con.execute("select * from scans where finished_at is not null order by finished_at desc limit 1").fetchone()
     return {"services": out, "last_scan": dict(last) if last else None}

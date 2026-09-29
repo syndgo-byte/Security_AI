@@ -1,12 +1,27 @@
 """보안 진단 API (기본 포트 8200). 허브 웹의 '보안 진단' 탭이 /security 프록시로 호출한다."""
 from __future__ import annotations
 
+import os
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Query
 
 from . import engine, manifest, remediate, store
-from .targets import load_targets
+from .targets import load_sites, load_targets
+from .watch import Watcher
 
-app = FastAPI(title="Security", version=manifest()["version"])
+watcher = Watcher()
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    if os.environ.get("SECURITY_WATCH") == "1":   # 허브와 같이 띄울 때 상시 진단 켜기
+        watcher.start()
+    yield
+    watcher.stop()
+
+
+app = FastAPI(title="Security", version=manifest()["version"], lifespan=lifespan)
 
 
 def _con():
@@ -25,7 +40,33 @@ def get_manifest():
 
 @app.get("/targets")
 def targets():
-    return {k: str(v) for k, v in load_targets().items()}
+    return {"code": {k: str(v) for k, v in load_targets().items()}, "web": load_sites()}
+
+
+@app.post("/web/scan")
+def web_scan(service: str | None = None):
+    s = load_sites()
+    if service and service not in s:
+        raise HTTPException(404, f"웹 주소가 없는 서비스: {service}")
+    return engine.run_web(s, service)
+
+
+@app.get("/escalations")
+def escalations(service: str | None = None):
+    """사람에게 넘긴 항목 (심각도 높음 이상, 열린 것)."""
+    return store.list_findings(_con(), service=service, status="open", action="escalate")
+
+
+@app.post("/auto-fix")
+def auto_fix(service: str | None = None):
+    """정책상 간단한 항목을 서비스 저장소의 새 브랜치에 커밋 (작업 폴더는 안 건드림)."""
+    t = load_targets()
+    return _act(remediate.auto_fix, _con(), {k: v for k, v in t.items() if not service or k == service})
+
+
+@app.get("/watch")
+def watch_status():
+    return {"running": os.environ.get("SECURITY_WATCH") == "1", "jobs": watcher.status}
 
 
 @app.post("/scan")
@@ -38,8 +79,9 @@ def scan(service: str | None = None, offline: bool = False):
 
 @app.get("/findings")
 def findings(service: str | None = None, category: str | None = None, severity: str | None = None,
-             status: str | None = None):
-    return store.list_findings(_con(), service=service, category=category, severity=severity, status=status)
+             status: str | None = None, action: str | None = None):
+    return store.list_findings(_con(), service=service, category=category, severity=severity, status=status,
+                               action=action)
 
 
 @app.get("/findings/{fid}")

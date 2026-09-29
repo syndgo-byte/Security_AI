@@ -8,3 +8,4 @@ security.db
 backup-claude/
 _backup/
 .handoff/
+.worktrees/

@@ -20,18 +20,27 @@ def scan_service(service: str, root: Path, offline: bool) -> list:
     return list(uniq.values())
 
 
-def report_to_hub(service: str, counts: dict) -> None:
+def report_to_hub(service: str, escalated: list) -> None:
+    """이번 진단에 새로 생긴 escalate 항목을 허브 모니터링 이벤트로 넘긴다 (같은 항목은 한 번만)."""
     hub = os.environ.get("HUB_URL")
-    crit, high = counts.get("critical", 0), counts.get("high", 0)
-    if not hub or not (crit or high):
+    if not hub or not escalated:
         return
+    crit = sum(r["severity"] == "critical" for r in escalated)
+    top = "; ".join(f"{r['title']} ({r['file']}:{r['line']})" for r in escalated[:3])
     q = urllib.parse.urlencode({"event_type": "error", "severity": "critical" if crit else "high",
-                                "message": f"[보안] 심각 {crit} · 높음 {high}"})
+                                "message": f"[보안] 사람 확인 필요 {len(escalated)}건 — {top}"[:500]})
     try:
         req = urllib.request.Request(f"{hub.rstrip('/')}/monitor/events/{service}?{q}", method="POST")
         urllib.request.urlopen(req, timeout=5).close()
     except OSError:
         pass
+
+
+def new_escalations(con, scan_id: str, service: str, known: set[str]) -> list:
+    from .policy import decide
+    rows = con.execute("select * from findings where scan_id=? and service=? and status='open'",
+                       (scan_id, service)).fetchall()
+    return [r for r in rows if r["id"] not in known and decide(r) == "escalate"]
 
 
 RULE_CATEGORIES = ("sast", "secrets", "config", "deps")
@@ -49,11 +58,19 @@ def _save_all(per_service: dict[str, list], categories: tuple[str, ...], offline
     scan_id = store.start_scan(con, list(per_service), offline)
     result = {}
     for service, findings in per_service.items():
+        known = {r["id"] for r in con.execute("select id from findings where service=?", (service,))}
         store.save_findings(con, scan_id, service, findings, categories)
         result[service] = _count(findings)
-        report_to_hub(service, result[service])
+        report_to_hub(service, new_escalations(con, scan_id, service, known))
     store.finish_scan(con, scan_id, result)
     return {"scan_id": scan_id, "services": result}
+
+
+def run_web(sites: dict[str, list[str]], only: str | None = None) -> dict:
+    """웹 가벼운 점검 (헤더 · 쿠키 · CORS · HTTPS · 노출 경로 · 인증서)."""
+    from .scanners import web
+    per_service, errors = web.scan(sites, only)
+    return {**_save_all(per_service, ("web",)), "errors": errors}
 
 
 def run(targets: dict[str, Path], only: str | None = None, offline: bool = False) -> dict:

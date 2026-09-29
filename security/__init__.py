@@ -19,7 +19,7 @@ def manifest() -> dict:
         "kind": "module",
         "version": __version__,
         "description": "전체 서비스 취약점 진단 (SAST · 의존성 CVE · 비밀정보 · 설정/개인정보 · AI 위협 수집/검토) 및 승인 후 수정 조치",
-        "provides": ["security.scan", "security.remediation"],
+        "provides": ["security.scan", "security.remediation", "security.watch"],
         "requires": [],
         "tools": [
             {"name": "security.scan_services", "description": "등록된 서비스 저장소 전체 또는 하나를 진단",
@@ -36,6 +36,12 @@ def manifest() -> dict:
              "auth_required": "user", "billing_model": "free"},
             {"name": "security.ai_triage", "description": "AI 다수결 오탐 판정 · 수정안 작성 (승인 후 적용)",
              "auth_required": "user", "billing_model": "free"},
+            {"name": "security.web_scan", "description": "실행 중인 웹 서비스 가벼운 점검 (헤더 · 쿠키 · CORS · HTTPS · 노출 경로 · 인증서)",
+             "auth_required": "service", "billing_model": "free"},
+            {"name": "security.auto_fix", "description": "간단한 항목 자동 조치 (서비스 저장소 새 브랜치에 커밋, 병합은 사람)",
+             "auth_required": "service", "billing_model": "free"},
+            {"name": "security.escalations", "description": "사람에게 넘긴 항목 (critical · 수정안 없는 high)",
+             "auth_required": "service", "billing_model": "free"},
         ],
         "license": {
             "service_id": "security", "environment": "prod", "status": "active",
