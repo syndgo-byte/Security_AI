@@ -32,6 +32,73 @@ def _newline(path: Path) -> str:
     return "\r\n" if path.exists() and b"\r\n" in path.read_bytes()[:4096] else "\n"
 
 
+def write_edits(base: Path, edits) -> list[str]:
+    """base 아래 파일에 수정을 쓴다. 줄이 안 맞으면 ValueError (그 전에 쓴 파일은 호출한 쪽이 정리)."""
+    files = sorted({e.file for e in edits})
+    for rel in files:
+        path = base / rel
+        before = read_lines(path) if path.exists() else []
+        lines = apply_edits(before, [e for e in edits if e.file == rel])
+        nl = _newline(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(nl.join(lines) + nl)
+    return files
+
+
+def _verify_key(root: Path, row) -> str:
+    """검증한 수정안 + 대상 파일 내용. 검증 뒤 둘 중 하나라도 바뀌면 다시 검증해야 한다."""
+    fix = row_fix(row)
+    return hashlib.sha256((json.dumps([e.__dict__ for e in fix.edits], ensure_ascii=False)
+                           + _hash(root, [e.file for e in fix.edits])).encode()).hexdigest()
+
+
+def require_verify() -> bool:
+    import os
+    return os.environ.get("SECURITY_REQUIRE_VERIFY", "1") != "0"
+
+
+def start_verify(con, targets: dict[str, Path], fid: str) -> tuple[Path, list]:
+    """검증을 시작할 수 있는지 확인하고 상태를 running 으로. 실제 검증은 run_verify (오래 걸려 백그라운드)."""
+    row = get(con, fid)
+    if not row or row["status"] not in ("open", "ready"):
+        raise RemediationError("열림 · 조치안 준비됨 상태만 검증할 수 있습니다.")
+    fix = row_fix(row)
+    if not fix or not fix.automatic:
+        raise RemediationError("수정안이 없는 항목입니다.")
+    root = targets.get(row["service"])
+    if not root:
+        raise RemediationError(f"대상 경로를 모릅니다: {row['service']}")
+    if row["verify"] and json.loads(row["verify"]).get("state") == "running":
+        raise RemediationError("이미 검증 중입니다.")
+    con.execute("update findings set verify=? where id=?", (json.dumps({"state": "running", "at": now()}), fid))
+    con.commit()
+    return root, fix.edits
+
+
+def run_verify(con, root: Path, fid: str, edits) -> dict:
+    from . import alerts, verify
+    try:
+        result = verify.run(root, edits)
+    except Exception as e:   # 검증기 자체 오류도 결과로 남겨 running 에 갇히지 않게
+        result = {"ok": False, "state": "error", "at": now(), "steps": [{"name": "검증", "ok": False, "seconds": 0,
+                                                                          "note": "검증 도중 오류", "log": repr(e)}]}
+    row = get(con, fid)
+    if not row:
+        return result
+    result["key"] = _verify_key(root, row)
+    con.execute("update findings set verify=? where id=?", (json.dumps(result, ensure_ascii=False), fid))
+    con.commit()
+    failed = [s for s in result["steps"] if not s["ok"]]
+    if failed:
+        alerts.emit(con, row["service"], "verify_failed", "medium", f"검증 실패: {row['title']}",
+                    "; ".join(f"{s['name']} {s['note']}".strip() for s in failed), fid)
+    else:
+        alerts.emit(con, row["service"], "verify_passed", "low", f"검증 통과: {row['title']}",
+                    " · ".join(f"{s['name']} {s['note']}".strip() for s in result["steps"]), fid)
+    return result
+
+
 def diff(con, targets: dict[str, Path], fid: str) -> str:
     row = get(con, fid)
     fix = row_fix(row) if row else None
@@ -57,6 +124,12 @@ def apply(con, targets: dict[str, Path], fid: str, approved_by: str) -> dict:
     root = targets.get(row["service"])
     if not root:
         raise RemediationError(f"대상 경로를 모릅니다: {row['service']}")
+    if require_verify():
+        v = json.loads(row["verify"]) if row["verify"] else {}
+        if v.get("state") != "passed":
+            raise RemediationError("동작 검증을 통과한 조치안만 적용할 수 있습니다. 먼저 '동작 검증'을 돌리세요.")
+        if v.get("key") != _verify_key(root, row):
+            raise RemediationError("검증한 뒤 수정안이나 대상 파일이 바뀌었습니다. 다시 검증하세요.")
 
     files = sorted({e.file for e in fix.edits})
     new_content = {}
@@ -91,6 +164,9 @@ def apply(con, targets: dict[str, Path], fid: str, approved_by: str) -> dict:
     con.execute("update findings set status='applied', approved_by=?, applied_at=?, backup_dir=?, applied_hash=?"
                 " where id=?", (approved_by, now(), str(backup), applied_hash, fid))
     con.commit()
+    from . import alerts
+    alerts.emit(con, row["service"], "applied", "low", f"조치 적용: {row['title']}",
+                f"{fix.description} · 승인 {approved_by} · 파일 {', '.join(files)} · 백업 {backup}", fid)
     return {"id": fid, "status": "applied", "files": files, "backup_dir": str(backup)}
 
 
@@ -109,8 +185,11 @@ def rollback(con, fid: str) -> dict:
             shutil.copy2(backup / rel, root / rel)
         else:
             (root / rel).unlink(missing_ok=True)
-    con.execute("update findings set status='rolled_back' where id=?", (fid,))
+    con.execute("update findings set status='rolled_back', verify=null where id=?", (fid,))
     con.commit()
+    from . import alerts
+    alerts.emit(con, row["service"], "rolled_back", "medium", f"조치 되돌림: {row['title']}",
+                ", ".join(meta["files"]), fid)
     return {"id": fid, "status": "rolled_back", "files": list(meta["files"])}
 
 
@@ -229,17 +308,8 @@ def auto_fix(con, targets: dict[str, Path], ids: list[str] | None = None) -> dic
         try:
             for r in items:
                 fix = row_fix(r)
-                changed = []
                 try:
-                    for rel in sorted({e.file for e in fix.edits}):
-                        path = wt / sub / rel
-                        before = read_lines(path) if path.exists() else []
-                        lines = apply_edits(before, [e for e in fix.edits if e.file == rel])
-                        nl = _newline(path)
-                        path.parent.mkdir(parents=True, exist_ok=True)
-                        with open(path, "w", encoding="utf-8", newline="") as f:
-                            f.write(nl.join(lines) + nl)
-                        changed.append(str(sub / rel))
+                    changed = [str(sub / rel) for rel in write_edits(wt / sub, fix.edits)]
                 except ValueError:   # 커밋 안 된 변경 위에서 진단된 줄 → HEAD 와 달라 건너뜀
                     _git(wt, "checkout", "-q", "--", ".")
                     result["skipped"].append(f"{service} {r['id']}: 커밋된 코드와 달라 건너뜀 ({r['file']}:{r['line']})")

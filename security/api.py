@@ -2,23 +2,29 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 
-from . import engine, manifest, remediate, store
+from . import alerts, engine, manifest, remediate, store
 from .targets import load_sites, load_targets
 from .watch import Watcher
 
 watcher = Watcher()
+verifier = ThreadPoolExecutor(max_workers=1, thread_name_prefix="verify")   # 설치 · 테스트가 무거워 한 번에 하나씩
 
 
 @asynccontextmanager
 async def lifespan(_app):
+    con = store.connect()   # 서버가 검증 도중 꺼졌으면 running 에 갇힌 것을 풀어 준다
+    con.execute("update findings set verify=null where verify like '%\"state\": \"running\"%'")
+    con.commit()
     if os.environ.get("SECURITY_WATCH") == "1":   # 허브와 같이 띄울 때 상시 진단 켜기
         watcher.start()
     yield
     watcher.stop()
+    verifier.shutdown(wait=False, cancel_futures=True)
 
 
 app = FastAPI(title="Security", version=manifest()["version"], lifespan=lifespan)
@@ -88,6 +94,20 @@ def cancel(fid: str):
 def delivered(fid: str, by: str = Query(..., min_length=1)):
     """허브가 조치안을 서비스에 반영했음을 알림."""
     return _act(remediate.mark_delivered, _con(), fid, by)
+
+
+@app.post("/findings/{fid}/verify")
+def verify(fid: str):
+    """조치안 동작 검증 시작 (임시 복사본에서 설치 · 테스트 · 기동). 결과는 /findings/{id} 의 verify 로 확인."""
+    root, edits = _act(remediate.start_verify, _con(), load_targets(), fid)
+    verifier.submit(lambda: remediate.run_verify(store.connect(), root, fid, edits))
+    return {"id": fid, "verify": {"state": "running"}}
+
+
+@app.get("/events")
+def events(service: str | None = None, limit: int = Query(50, ge=1, le=500)):
+    """조치 알람 (검증 통과 · 실패, 적용, 되돌림). 허브 모니터링에도 같이 보고된다 (HUB_URL)."""
+    return alerts.recent(_con(), service, limit)
 
 
 @app.get("/watch")

@@ -19,9 +19,12 @@ create table if not exists findings(
   file text, line integer, detail text, evidence text, fix text, status text default 'open',
   first_seen text, last_seen text, approved_by text, applied_at text, backup_dir text, applied_hash text);
 create index if not exists ix_findings_service on findings(service);
+create table if not exists events(
+  id text primary key, at text, service text, kind text, level text, title text, detail text, finding_id text);
+create index if not exists ix_events_at on events(at);
 """
 AI_COLUMNS = ("ai_verdict", "ai_note", "ai_models", "ai_fix")   # AI 판정 · 수정안. 재진단해도 유지
-EXTRA_COLUMNS = AI_COLUMNS + ("patch",)                          # patch: 허브가 가져갈 조치안(diff)
+EXTRA_COLUMNS = AI_COLUMNS + ("patch", "verify")                # patch: 허브가 가져갈 조치안(diff) · verify: 동작 검증 결과(json)
 # 상태: open 열림 · ready 조치안 준비됨(허브 관리) · delivered 허브가 반영 · applied 직접 적용 ·
 #       branch 저장소 브랜치 커밋 · rolled_back 되돌림 · dismissed 무시
 PENDING = ("open", "ready")   # 다음 진단에서 안 나오면 해결로 보고 지우는 상태
@@ -54,7 +57,7 @@ def start_scan(con, services: list[str], offline: bool) -> str:
 
 
 def save_findings(con, scan_id: str, service: str, findings: list[Finding],
-                  categories: tuple[str, ...] | None = None) -> None:
+                  categories: tuple[str, ...] | None = None, keep_rules: tuple[str, ...] = ()) -> None:
     """이번 진단에 나온 것은 upsert, 이번에 돌린 분류(categories)에서 안 나온 open 항목은 해결된 것으로 보고 지운다."""
     ts = now()
     seen = set()
@@ -69,8 +72,10 @@ def save_findings(con, scan_id: str, service: str, findings: list[Finding],
                          status=case when findings.status='rolled_back' then 'open' else findings.status end""",
                     (f.id, scan_id, service, f.category, f.rule, f.severity, f.title, f.file, f.line, f.detail,
                      f.evidence, fix, ts, ts))
-    rows = con.execute("select id, category from findings where service=? and status in ('open', 'ready', 'delivered')",
+    rows = con.execute("select id, category, rule from findings where service=? and status in ('open', 'ready', 'delivered')",
                        (service,)).fetchall()
+    # 이번 진단에서 확인하지 않은 규칙(예: 오프라인이라 CVE 조회 안 함)은 해결된 게 아니므로 남긴다
+    rows = [r for r in rows if not r["rule"].startswith(keep_rules)] if keep_rules else rows
     if categories is not None:
         rows = [r for r in rows if r["category"] in categories]
     stale = [r["id"] for r in rows if r["id"] not in seen]
@@ -104,6 +109,7 @@ def to_dict(row) -> dict:
                 "files": sorted({e.file for e in fix.edits})} if fix else None
     d.pop("ai_fix", None)
     d.pop("patch", None)
+    d["verify"] = json.loads(row["verify"]) if row["verify"] else None
     from .policy import decide
     d["action"] = decide(row) if row["status"] in PENDING else None
     return d

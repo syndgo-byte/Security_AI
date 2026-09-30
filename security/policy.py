@@ -17,7 +17,7 @@ from .store import row_fix
 
 RANK = {s: i for i, s in enumerate(reversed(SEVERITIES))}   # low 0 … critical 3
 # 규칙 기반이라도 서비스 동작이 바뀔 수 있어 자동 적용하지 않는 규칙
-NEEDS_APPROVAL = ("DEPS-", "SECRET-HARDCODED", "CONFIG-CORS")
+NEEDS_APPROVAL = ("DEPS-", "SECRET-HARDCODED", "CONFIG-CORS", "HARD-")
 
 
 def _sev(name: str, default: str) -> int:

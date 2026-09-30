@@ -26,6 +26,7 @@ def run(cur, q):
 def repo(tmp_path, monkeypatch):
     monkeypatch.setenv("SECURITY_DB", str(tmp_path / "sec.db"))
     monkeypatch.setattr(remediate, "BACKUPS", tmp_path / "backups")
+    monkeypatch.setenv("SECURITY_REQUIRE_VERIFY", "0")   # 적용 동작 자체를 보는 테스트 — 검증 흐름은 test_verify
     root = tmp_path / "svc"
     root.mkdir()
     (root / "app.py").write_text(APP, encoding="utf-8")
