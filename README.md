@@ -1,7 +1,7 @@
 # Security_AI
 AI 모델들로 CVE, 개인정보, 웹 등 취약점 수집 및 MCP 허브 연결 후 다른 서비스 전체 점검 및 딸깍 조치
 
-마지막 업데이트: 2026-09-30 23:38
+마지막 업데이트: 2026-10-01 04:59
 
 ## 구성
 - 진단 6종 (`security/scanners/`)
@@ -34,7 +34,8 @@ AI 모델들로 CVE, 개인정보, 웹 등 취약점 수집 및 MCP 허브 연�
 ```
 pip install -e .[dev]
 python -m security scan [--service EMSv3] [--offline]
-python -m security list [--severity high] [--status open]
+python -m security list [--severity high] [--status open]   # --json: 기계용 출력(ops/compliance 가 읽음)
+python -m security targets                      # 진단 대상 목록 JSON (code · web)
 python -m security show <id>                # 상세 + diff
 python -m security apply <id> --by 홍길동    # 승인 후 적용
 python -m security rollback <id>

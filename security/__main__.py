@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from . import engine, remediate, store
@@ -21,6 +22,8 @@ def main(argv=None) -> int:
     ls = sub.add_parser("list", help="진단 결과 목록")
     for k in ("service", "category", "severity", "status"):
         ls.add_argument(f"--{k}")
+    ls.add_argument("--json", action="store_true", help="JSON 으로 (다른 ops 가 읽는 용도)")
+    sub.add_parser("targets", help="진단 대상 목록 JSON (code · web)")
     sub.add_parser("show").add_argument("id")
     a = sub.add_parser("apply", help="승인 후 적용")
     a.add_argument("id")
@@ -117,6 +120,13 @@ def main(argv=None) -> int:
                   f" · AI 수정안 {r['patched']}")
             for e in r["errors"]:
                 print("  오류:", e)
+        elif args.cmd == "targets":
+            print(json.dumps({"code": {k: str(v) for k, v in load_targets().items()}, "web": load_sites()},
+                             ensure_ascii=False))
+        elif args.cmd == "list" and args.json:
+            print(json.dumps(store.list_findings(con, service=args.service, category=args.category,
+                                                 severity=args.severity, status=args.status),
+                             ensure_ascii=False, default=str))
         elif args.cmd == "list":
             for f in store.list_findings(con, service=args.service, category=args.category,
                                          severity=args.severity, status=args.status):
