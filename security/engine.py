@@ -1,4 +1,4 @@
-"""진단 실행 — 대상별로 5개 진단기를 돌리고 저장 · 허브 보고."""
+"""진단 실행 — 대상별로 6개 진단기를 돌리고 저장 · 허브 보고."""
 from __future__ import annotations
 
 import os
@@ -7,7 +7,7 @@ import urllib.request
 from pathlib import Path
 
 from . import store
-from .scanners import config, deps, hardening, sast, secrets
+from .scanners import config, deps, hardening, legal, sast, secrets
 
 
 def scan_service(service: str, root: Path, offline: bool) -> list:
@@ -16,6 +16,7 @@ def scan_service(service: str, root: Path, offline: bool) -> list:
     out += secrets.scan(service, root)
     out += config.scan(service, root)
     out += hardening.scan(service, root)
+    out += legal.scan(service, root)
     out += deps.scan(service, root, offline=offline)
     uniq = {f.id: f for f in out}
     return list(uniq.values())
@@ -44,7 +45,7 @@ def new_escalations(con, scan_id: str, service: str, known: set[str]) -> list:
     return [r for r in rows if r["id"] not in known and decide(r) == "escalate"]
 
 
-RULE_CATEGORIES = ("sast", "secrets", "config", "hardening", "deps")
+RULE_CATEGORIES = ("sast", "secrets", "config", "hardening", "legal", "deps")
 
 
 def _count(findings) -> dict:

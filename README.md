@@ -1,14 +1,16 @@
 # Security_AI
 AI 모델들로 CVE, 개인정보, 웹 등 취약점 수집 및 MCP 허브 연결 후 다른 서비스 전체 점검 및 딸깍 조치
 
-마지막 업데이트: 2026-09-30 11:14
+마지막 업데이트: 2026-09-30 23:19
 
 ## 구성
-- 진단 4종 (`security/scanners/`)
+- 진단 6종 (`security/scanners/`)
   - `sast` — 코드 취약점 (Python AST · JS 패턴: eval, 셸 실행, SQL 조립, yaml.load, verify=False, innerHTML 등)
   - `deps` — 의존성 CVE (requirements · pyproject · package.json 을 OSV 에 조회. 패키지명·버전만 전송)
   - `secrets` — 키 · 토큰 · 비밀번호 하드코딩, .env 커밋/미제외
   - `config` — DEBUG, CORS, 쿠키 속성, 로그 비밀값, 고유식별정보 평문 저장 (개인정보보호법 제24조)
+  - `hardening` — 실행 권한 · 외부 노출 · 백도어 흔적 (root 실행, privileged, cap_add, 0.0.0.0 바인딩, raw 소켓/BPF)
+  - `legal` — 「개인정보의 안전성 확보조치 기준」 기술 항목: 접속기록 보관(제8조①) · 세션 만료(제6조④) · 관리자 추가 인증(제6조②) · 비밀번호 일방향 암호화(제7조①). 정적 분석이라 '없다는 증거'일 뿐이어서 제목에 '확인 필요', 심각도 medium 이하
 - AI (`security/ai/`) — Claude · Gemini · OpenAI 중 키가 있는 모델을 **모두 동시에** 쓰고 결과를 합의로 합친다
   - `intel` — 최신 위협 수집: CISA KEV(실제 악용 중) + NVD 최근 CVE → 서비스 의존성과 대조해 AI 가 해당하는 것만 추림 (패키지명·버전과 공개 CVE 설명만 전송)
   - `review` — AI 코드 검토: 인가 누락 · IDOR · 경로 조작 · SSRF 등 규칙으로 못 잡는 것. 모델이 짚은 줄이 실제와 다르면 버림, 한 모델만 지목하면 심각도 한 단계 낮춤
