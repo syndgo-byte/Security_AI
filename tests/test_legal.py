@@ -64,3 +64,21 @@ def test_test_dirs_ignored(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "t.py").write_text("password = Column(String)\n", encoding="utf-8")
     assert legal.scan("svc", tmp_path) == []
+
+
+def test_password_min_length(tmp_path):
+    assert "LEGAL-PASSWORD-MINLEN" in _scan(tmp_path, {"a.py": "PASSWORD_MIN_LENGTH = 6\n"})
+    assert "LEGAL-PASSWORD-MINLEN" in _scan(tmp_path, {"a.py": "password: str = Field(..., min_length=4)\n"})
+    assert "LEGAL-PASSWORD-MINLEN" not in _scan(tmp_path, {"a.py": "PASSWORD_MIN_LENGTH = 10\n"})
+
+
+def test_login_lockout(tmp_path):
+    code = WEB + "audit = 1\n@app.post('/login')\ndef login(): ...\n"
+    assert "LEGAL-NO-LOGIN-LOCKOUT" in _scan(tmp_path, {"a.py": code})
+    assert "LEGAL-NO-LOGIN-LOCKOUT" not in _scan(tmp_path, {"a.py": code + "failed_attempts = 0\n"})
+
+
+def test_login_lockout_recognises_throttle_helpers(tmp_path):
+    """EMSv3 실제 코드 형태: security.login_locked(throttle_key) — 오탐이었던 것."""
+    code = WEB + "audit = 1\n@app.post('/login')\ndef login():\n    wait = security.login_locked(throttle_key)\n"
+    assert "LEGAL-NO-LOGIN-LOCKOUT" not in _scan(tmp_path, {"a.py": code})

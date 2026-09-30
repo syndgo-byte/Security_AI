@@ -10,6 +10,8 @@
   LEGAL-NO-MFA                제6조②  관리자 기능이 있는데 일회용 비밀번호 · 보안토큰 등 추가 인증 흔적이 없음
   LEGAL-PASSWORD-PLAIN        제7조①  비밀번호 필드가 있는데 일방향 해시 라이브러리를 안 씀
   LEGAL-PASSWORD-FAST-HASH    제7조①  비밀번호를 sha256 등 단순 해시로 저장 (솔트 · 반복 없음)
+  LEGAL-PASSWORD-MINLEN       정보보호조치 지침 별표1 2.2.9  비밀번호 최소 길이 설정이 8 미만
+  LEGAL-NO-LOGIN-LOCKOUT      전자금융감독규정 제34조의3②2호  로그인은 있는데 입력 오류 횟수 제한 흔적이 없음
 """
 from __future__ import annotations
 
@@ -30,6 +32,11 @@ PW_HASH_RX = re.compile(r"bcrypt|argon2|pbkdf2|scrypt|passlib|werkzeug\.security
 FAST_HASH_RX = re.compile(r"hashlib\.(sha1|sha224|sha256|sha384|sha512|md5)\(\s*(?:\w+\.)?(?:password|passwd|pw)\b", re.I)
 JWT_ENCODE_RX = re.compile(r"jwt\.encode\(")
 COOKIE_AGE_RX = re.compile(r"max_age\s*=\s*([0-9*\s]+)")
+PW_MINLEN_RX = re.compile(r"(?:password|passwd|pw)\w*?_?min(?:imum)?_?len(?:gth)?\s*[=:]\s*(\d+)"
+                          r"|(?:password|passwd|pw)\w*\s*[:=][^\n]{0,60}?min_length\s*=\s*(\d+)", re.I)
+LOGIN_RX = re.compile(r"""def\s+(?:login|signin|sign_in|authenticate)\b|["']/(?:auth/)?(?:login|signin)\b""", re.I)
+LOCKOUT_RX = re.compile(r"fail(?:ed)?_?(?:count|attempts?|login)|login_?attempts?|lockout|locked_?until|"
+                        r"max_?attempts|rate_?limit|slowapi|limiter\.limit|too\s+many|login_?lock|throttl|brute", re.I)
 DAY = 86400
 
 
@@ -129,5 +136,19 @@ def scan(service: str, root: Path) -> list[Finding]:
             add(rel, line_of(text, m), "LEGAL-PASSWORD-FAST-HASH", "medium", f"비밀번호를 {m.group(1)} 단순 해시로 처리",
                 "안전성 확보조치 기준 제7조①: 솔트 · 반복이 없는 빠른 해시는 사전 대입에 약합니다. "
                 "bcrypt · argon2 · pbkdf2(hashlib.pbkdf2_hmac) 를 쓰세요.")
+        for m in PW_MINLEN_RX.finditer(text):
+            n = int(m.group(1) or m.group(2))
+            if n < 8:
+                add(rel, line_of(text, m), "LEGAL-PASSWORD-MINLEN", "medium", f"비밀번호 최소 길이 {n}자 (8자 미만)",
+                    "정보보호조치에 관한 지침 별표1 2.2.9: 관리자 계정 비밀번호는 8자리 이상. "
+                    "이용자 비밀번호도 제3자가 유추하기 어렵게(전자금융감독규정 제34조의3②1호) 8자 이상 + 조합 규칙을 권장합니다.")
+
+    # 전자금융감독규정 제34조의3②2호
+    login = next(((r, t, m) for r, t in files if (m := LOGIN_RX.search(t))), None)
+    if login and not LOCKOUT_RX.search(alltext):
+        rel, text, m = login
+        add(rel, line_of(text, m), "LEGAL-NO-LOGIN-LOCKOUT", "medium", "로그인 오류 횟수 제한 흔적 없음 (확인 필요)",
+            "비밀번호를 계속 틀려도 막지 않으면 대입 공격에 무방비입니다. 전자금융감독규정 제34조의3②2호는 정한 횟수 이상 "
+            "틀리면 즉시 중지 후 본인확인을 요구합니다. 실패 횟수를 세어 잠그거나 요청 속도 제한을 두세요.")
     return out
 
