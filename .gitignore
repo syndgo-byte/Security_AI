@@ -9,3 +9,23 @@ backup-claude/
 _backup/
 .handoff/
 .worktrees/
+
+# Local state and credentials (workspace cleanup 2026-10-03)
+.handoff/
+.claude/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+pytest-cache-files-*/
+.env
+.env.*
+!.env.example
+!.env.sample
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+node_modules/
+.venv/
+venv/
