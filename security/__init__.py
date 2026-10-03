@@ -19,7 +19,7 @@ def manifest() -> dict:
         "kind": "ops",  # 관리 서비스: 모든 서비스를 점검 (허브 위, 3D 관제판에서는 달 · 태양)
         "version": __version__,
         "description": "전체 서비스 취약점 진단 (SAST · 의존성 CVE · 비밀정보 · 설정/개인정보 · AI 위협 수집/검토) 및 승인 후 수정 조치",
-        "provides": ["security.scan", "security.remediation", "security.watch"],
+        "provides": ["security.scan", "security.remediation", "security.watch", "security.kernel"],
         "requires": [],
         "tools": [
             {"name": "security.scan_services", "description": "등록된 서비스 저장소 전체 또는 하나를 진단",
@@ -42,6 +42,12 @@ def manifest() -> dict:
              "auth_required": "service", "billing_model": "free"},
             {"name": "security.escalations", "description": "사람에게 넘긴 항목 (critical · 수정안 없는 high)",
              "auth_required": "service", "billing_model": "free"},
+            {"name": "security.kernel_audit", "description": "호스트 커널 하드닝 점검 (CVE 노출 · sysctl · 위험 모듈)",
+             "auth_required": "service", "billing_model": "free"},
+            {"name": "security.kernel_harden", "description": "커널 하드닝 적용 (백업 · dry-run 기본)",
+             "auth_required": "user", "billing_model": "free"},
+            {"name": "security.kernel_rollback", "description": "커널 하드닝 원복",
+             "auth_required": "user", "billing_model": "free"},
         ],
         "license": {
             "service_id": "security", "environment": "prod", "status": "active",

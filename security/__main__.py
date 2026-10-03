@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 
 from . import engine, remediate, store
 from .targets import load_sites, load_targets
@@ -50,10 +51,50 @@ def main(argv=None) -> int:
     sub.add_parser("escalations", help="사람에게 넘긴 항목").add_argument("--service")
     wa = sub.add_parser("watch", help="상시 진단 (코드 30분 · 웹 6시간 · 위협 수집 하루)")
     wa.add_argument("--once", action="store_true", help="모든 작업을 한 번만 돌리고 끝")
+    kh = sub.add_parser("kernel", help="호스트 커널 하드닝 · 감시")
+    kh.add_argument("action", choices=("audit", "harden", "rollback", "baseline", "monitor"))
+    kh.add_argument("--apply", action="store_true", help="harden 실제 적용 (기본: dry-run)")
+    ns = kh.add_mutually_exclusive_group()
+    ns.add_argument("--block-userns", dest="userns", action="store_const", const=True)
+    ns.add_argument("--allow-userns", dest="userns", action="store_const", const=False)
+    kh.set_defaults(userns=None)
+    kh.add_argument("--once", action="store_true")
+    kh.add_argument("--interval", type=int, default=60)
     sv = sub.add_parser("serve")
     sv.add_argument("--port", type=int, default=8200)
     sv.add_argument("--watch", action="store_true", help="상시 진단도 같이 실행")
     args = p.parse_args(argv)
+
+    if args.cmd == "kernel":
+        from . import kernel
+        h = kernel.Host()
+        if args.action == "monitor" and args.interval <= 0:
+            p.error("--interval 은 양수여야 합니다")
+        if not h.supported:
+            result = kernel.audit(h)
+        elif args.action == "monitor":
+            rules = kernel.install_audit_rules(h)
+            if not rules.get("ok"):
+                print(json.dumps(rules, ensure_ascii=False, indent=1), flush=True)
+            con = store.connect()
+            try:
+                while True:
+                    result = kernel.monitor_once(h, con)
+                    if args.once or result.get("supported") is False:
+                        break
+                    if result.get("events"):
+                        print(json.dumps(result, ensure_ascii=False), flush=True)
+                    time.sleep(args.interval)
+            except KeyboardInterrupt:
+                return 0
+            finally:
+                con.close()
+        elif args.action == "harden":
+            result = kernel.harden(h, dry_run=not args.apply, userns=args.userns)
+        else:
+            result = getattr(kernel, args.action)(h)
+        print(json.dumps(result, ensure_ascii=False, indent=1))
+        return 2 if result.get("supported") is False else 0
 
     if args.cmd == "serve":
         import os

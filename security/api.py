@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 
-from . import alerts, engine, manifest, remediate, store
+from . import alerts, engine, kernel, manifest, remediate, store
 from .targets import load_sites, load_targets
 from .watch import Watcher
 
@@ -42,6 +42,38 @@ def health():
 @app.get("/manifest")
 def get_manifest():
     return manifest()
+
+
+@app.get("/kernel/audit")
+def kernel_audit():
+    return kernel.audit(kernel.Host())
+
+
+@app.post("/kernel/harden")
+def kernel_harden(dry_run: bool = True, userns: bool | None = None):
+    return kernel.harden(kernel.Host(), dry_run=dry_run, userns=userns)
+
+
+@app.post("/kernel/rollback")
+def kernel_rollback():
+    return kernel.rollback(kernel.Host())
+
+
+@app.get("/kernel/baseline")
+def kernel_baseline():
+    result = kernel.load_baseline(kernel.Host())
+    if result is None:
+        raise HTTPException(404, "베이스라인 없음 — harden 먼저")
+    return result
+
+
+@app.post("/kernel/monitor")
+def kernel_monitor():
+    con = _con()
+    try:
+        return kernel.monitor_once(kernel.Host(), con)
+    finally:
+        con.close()
 
 
 @app.get("/targets")
