@@ -1,7 +1,7 @@
 # Security_AI
 AI 모델들로 CVE, 개인정보, 웹 등 취약점 수집 및 MCP 허브 연결 후 다른 서비스 전체 점검 및 딸깍 조치
 
-마지막 업데이트: 2026-10-01 04:59
+마지막 업데이트: 2026-10-03 20:59
 
 ## 구성
 - 진단 6종 (`security/scanners/`)
@@ -29,6 +29,28 @@ AI 모델들로 CVE, 개인정보, 웹 등 취약점 수집 및 MCP 허브 연�
 - 상시 진단 (`security/watch.py`) — 허브에 연결된 서비스는 계속: 코드 30분 · 웹 6시간 · 위협 수집 하루 주기, 코드 진단 뒤 자동 조치
 - 수동 승인 조치 (`security/remediate.py`) — 줄 단위 패치(diff)를 보여주고 **승인해야만** 적용. 적용 전 `.backups/` 에 원본 백업, 이후 파일이 안 바뀌었으면 되돌리기 가능
 - MCP Hub 연동 — `security/__init__.py` 의 `manifest()` 를 허브가 읽어 등록, 허브 웹 '보안 진단' 탭이 `/security` → 8200 으로 호출
+
+## 커널 하드닝 (host)
+
+호스트 커널을 점검하고, 백업 후 하드닝 → 베이스라인 저장 → 핵심 징후 감시 순서로 운용한다 (리눅스 전용).
+
+```
+python -m security kernel audit
+python -m security kernel harden [--apply] [--block-userns|--allow-userns]
+python -m security kernel rollback
+python -m security kernel baseline
+python -m security kernel monitor [--once] [--interval 60]
+```
+
+- `audit` — 커널 버전 기준 CVE 노출 가능성 · sysctl · 위험 모듈 점검. 배포판 백포트 여부는 별도 확인
+- `harden` — 기본은 **dry-run** (변경 diff만 출력). `--apply` 때 설정을 백업하고 sysctl.d · modprobe.d 및 런타임에 적용
+- 이미 로드된 모듈은 블랙리스트에 넣지 않는다. 컨테이너 런타임이 감지되면 userns 차단은 기본 제외 (`--block-userns`로 강제 차단, `--allow-userns`로 제외)
+- `rollback` — 마지막 백업으로 설정 · 런타임 원복. `baseline` — 조치 후 상태 스냅샷 저장
+- `monitor` — 기본 60초마다 설정 drift 복구 · 차단 모듈 로드 감시. 시스템콜 · 권한 상승 탐지는 **auditd 필요**, 없으면 drift 감시만 동작. 이벤트가 있을 때만 JSON 한 줄 출력, `--once`는 한 번 점검하고 결과 출력
+
+API: `GET /kernel/audit`, `POST /kernel/harden?dry_run=true` (`userns=true|false`, 생략 시 자동),
+`POST /kernel/rollback`, `GET /kernel/baseline` (저장된 스냅샷, 없으면 404), `POST /kernel/monitor` (한 번 점검 · 알림 저장).
+API도 `dry_run=true`가 기본이며 실제 적용은 `dry_run=false`.
 
 ## 사용
 ```
