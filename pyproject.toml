@@ -9,7 +9,7 @@ dependencies = ["fastapi>=0.110", "uvicorn>=0.29"]
 dev = ["pytest>=8", "httpx>=0.27"]
 
 [tool.setuptools]
-packages = ["security", "security.scanners", "security.ai"]
+packages = ["security", "security.scanners", "security.ai", "security.kernel"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

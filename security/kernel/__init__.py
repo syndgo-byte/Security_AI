@@ -1,13 +1,13 @@
-"""Live Linux host hardening, separate from service source-code scanners."""
+"""Public API for host kernel auditing, hardening, rollback and monitoring."""
 
-# This legacy package takes precedence over the sibling kernel.py on import.
-# Expose that implementation while keeping the existing submodules available.
-import importlib.util as _util
-import sys as _sys
-from pathlib import Path as _Path
-
-_spec = _util.spec_from_file_location("security._kernel_impl", _Path(__file__).parent.parent / "kernel.py")
-_impl = _util.module_from_spec(_spec)
-_sys.modules[_spec.name] = _impl
-_spec.loader.exec_module(_impl)
-globals().update({name: value for name, value in vars(_impl).items() if not name.startswith("__")})
+from .host import (
+    BLACKLIST, CONTAINER_MARKERS, MODPROBE_CONF, SERVICE, SYSCTL_CONF, TARGETS,
+    USERNS_KEY, Host, sandbox_host, sys,
+)
+from .audit import CVES, audit
+from .baseline import baseline, load_baseline
+from .harden import harden, rollback
+from .monitor import (
+    AUDIT_FIELD, AUDIT_KEYS, AUDIT_RULES, CRED_WHITELIST, check_drift,
+    install_audit_rules, monitor_once, parse_audit, read_audit_log, simulate_threat,
+)

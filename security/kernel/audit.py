@@ -1,81 +1,69 @@
-"""Read-only kernel findings; release ranges are not vendor patch attestation."""
-from pathlib import Path
+"""Read-only kernel version, sysctl and module audit."""
+from __future__ import annotations
 
-from ..findings import Finding
-from . import host
+import re
 
+from ..findings import Finding, Fix
+from .host import BLACKLIST, MODPROBE_CONF, SERVICE, TARGETS, USERNS_KEY, Host, _unsupported
 
-def finding(rule: str, severity: str, title: str, detail: str, evidence: str = "",
-            file: str = "/proc/sys") -> Finding:
-    return Finding("host", "kernel", "KERN-" + rule, severity, title, file, 0, detail, evidence)
-
-
-def cve_findings(release: str) -> list[Finding]:
-    version = host.parse_version(release)
-    unknown = version is None or "-rc" in release
-    pipe = nft = False
-    if not unknown:
-        pipe = (5, 8, 0) <= version < (5, 17, 0)
-        for branch, patch in (((5, 10), 102), ((5, 15), 25), ((5, 16), 11)):
-            if version[:2] == branch and version[2] >= patch:
-                pipe = False
-        # NVD upstream ranges, checked 2026-10-03. Vendor backports require verification.
-        nft = any(start <= version < end for start, end in (
-            ((3, 15, 0), (5, 15, 149)), ((5, 16, 0), (6, 1, 76)),
-            ((6, 2, 0), (6, 6, 15)), ((6, 7, 0), (6, 7, 3))))
-    out = []
-    for cve, name, exposed, source in (
-        ("CVE-2022-0847", "Dirty Pipe", pipe, "https://dirtypipe.cm4all.com/"),
-        ("CVE-2024-1086", "nf_tables", nft, "https://nvd.nist.gov/vuln/detail/CVE-2024-1086"),
-    ):
-        status = "unknown" if unknown else "potentially_exposed" if exposed else "outside_known_upstream_range"
-        out.append(finding(cve, "high" if exposed else "info", f"{name}: {status}",
-                           "Check the vendor kernel advisory and reboot after updates; release-only inference "
-                           f"cannot attest vendor backports. {source}", release, "/proc/sys/kernel/osrelease"))
-    return out
+# Introduced version, mainline fix, and stable branch fixes.
+CVES = {
+    "CVE-2022-0847": ("Dirty Pipe", (5, 8, 0), (5, 16, 11), {(5, 10): 102, (5, 15): 25, (5, 16): 11}),
+    "CVE-2024-1086": ("netfilter nf_tables UAF", (3, 15, 0), (6, 8, 0),
+                      {(5, 4): 269, (5, 10): 209, (5, 15): 149, (6, 1): 76, (6, 6): 15, (6, 7): 3}),
+}
 
 
-def scan(root: Path = Path("/"), *, allow_userns: bool = False) -> list[Finding]:
-    snapshot = host.inspect(root)
-    if snapshot["status"] == "unsupported":
-        return []
-    return _findings(snapshot, allow_userns)
+def _ver(s: str) -> tuple[int, int, int] | None:
+    m = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", s)
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)) if m else None
 
 
-def _findings(snapshot: dict, allow_userns: bool) -> list[Finding]:
-    out = cve_findings(snapshot["kernel"])
-    for key, wanted in host.TARGETS.items():
-        actual = snapshot["sysctls"].get(key)
-        rule = "SYSCTL-" + key.upper().replace(".", "-").replace("_", "-")
-        file = "/proc/sys/" + key.replace(".", "/")
-        if key == host.USERNS_KEY and (snapshot["runtimes"] or allow_userns):
-            out.append(finding(rule, "info", "user namespaces: skipped",
-                               "Container runtime detected or --allow-userns selected; leave unchanged.",
-                               str(actual), file))
-        elif actual is None:
-            out.append(finding(rule, "info", f"{key}: unavailable (skipped)",
-                               snapshot["unavailable"].get(key, "unavailable"), file=file))
-        elif actual != wanted:
-            out.append(finding(rule, "high" if key in (host.BPF_KEY, "kernel.io_uring_disabled") else "medium",
-                               f"{key}: hardening required", f"Target {wanted}; current {actual}. "
-                               "Exposure reduction does not replace vendor kernel patches.", actual, file))
-    for module in host.MODULES:
-        loaded = module in snapshot["modules"]
-        blocked = module in snapshot["blacklisted_modules"]
-        if loaded or not blocked:
-            out.append(finding("MODULE-" + module.upper(), "medium" if loaded else "low",
-                               f"{module}: {'loaded; manual review required' if loaded else 'not blacklisted'}",
-                               "Loaded modules are never unloaded or added to the managed blacklist.",
-                               f"loaded={loaded}, blacklisted={blocked}", "/proc/modules"))
-    return out
+def _exposed(v, introduced, mainline, branches) -> bool:
+    if v < introduced or v >= mainline:
+        return False
+    fix = branches.get(v[:2])
+    return not (fix is not None and v[2] >= fix)
 
 
-def audit(root: Path = Path("/"), *, allow_userns: bool = False) -> dict:
-    if result := host.unsupported():
-        return result
-    try:
-        snapshot = host.inspect(root)
-        return {"status": "ok", "host": snapshot,
-                "findings": [f.to_dict() for f in _findings(snapshot, allow_userns)]}
-    except host.ERRORS as exc:
-        return {"status": "error", "message": str(exc)}
+def audit(h: Host) -> dict:
+    if not h.supported:
+        return _unsupported()
+    kver = h.kernel()
+    v = _ver(kver)
+    cont = h.containers()
+    out: list[Finding] = []
+    for cve, (name, intro, main, br) in CVES.items():
+        if v and _exposed(v, intro, main, br):
+            out.append(Finding(SERVICE, "kernel", f"KERN-{cve}", "high", f"{name} ({cve}) 노출 가능 — 배포판 백포트 확인 필요",
+                               "proc/sys/kernel/osrelease", 0, f"커널 {kver} 는 업스트림 기준 취약 범위입니다. "
+                               "배포판이 패치를 백포트했는지 확인하고 커널을 업데이트하세요.", kver, Fix("수동 조치: 커널 업데이트")))
+    if v and v >= (5, 1, 0) and h.sysctl("kernel.io_uring_disabled") is None:
+        out.append(Finding(SERVICE, "kernel", "KERN-IOURING-NOSWITCH", "medium", "io_uring 끄는 sysctl 없음", "", 0,
+                           "6.6 미만 커널이라 kernel.io_uring_disabled 가 없습니다. seccomp 로 io_uring_setup 을 막거나 커널을 올리세요.",
+                           kver, Fix("수동 조치: seccomp / 커널 업데이트")))
+    for key, (want, sev, title, detail) in TARGETS.items():
+        cur = h.sysctl(key)
+        if cur is None or cur == want:
+            continue
+        if key == USERNS_KEY and cont:
+            out.append(Finding(SERVICE, "kernel", "KERN-USERNS-CONTAINER", "low", "user namespace 허용 (컨테이너 사용 중이라 유지)",
+                               "", 0, f"컨테이너 런타임 감지({', '.join(cont)}) — 차단하면 rootless 컨테이너가 깨질 수 있어 제외합니다.",
+                               f"{key} = {cur}", Fix("harden --block-userns 로 강제 가능")))
+            continue
+        out.append(Finding(SERVICE, "kernel", "KERN-SYSCTL-" + key.split(".")[-1].upper(), sev, title,
+                           "proc/sys/" + key.replace(".", "/"), 0, detail + f" 권장 {key} = {want}",
+                           f"{key} = {cur}", Fix("harden 으로 적용")))
+    loaded, black = set(h.modules()), h.blacklisted()
+    for mod in BLACKLIST:
+        if mod in black:
+            continue
+        if mod in loaded:
+            out.append(Finding(SERVICE, "kernel", "KERN-MOD-LOADED", "medium", f"위험 모듈 {mod} 로드됨", "proc/modules", 0,
+                               "사용 중인 모듈이라 자동 차단하지 않습니다. 쓰는 곳이 없으면 언로드 후 블랙리스트하세요.",
+                               mod, Fix("수동 조치: 사용처 확인 후 modprobe -r")))
+        else:
+            out.append(Finding(SERVICE, "kernel", "KERN-MOD-BLACKLIST", "low", f"미사용 위험 모듈 {mod} 미차단", MODPROBE_CONF, 0,
+                               "자동 로드로 공격면이 열릴 수 있습니다.", mod, Fix("harden 으로 블랙리스트")))
+    return {"supported": True, "kernel": kver, "os": h.os_release().get("PRETTY_NAME", ""), "containers": cont,
+            "findings": [f.to_dict() for f in out]}

@@ -135,6 +135,53 @@ def test_non_linux_unsupported(monkeypatch):
     assert kernel.audit(kernel.Host(root="/"))["supported"] is False
 
 
+def test_sandbox_host(tmp_path):
+    root = tmp_path / "sandbox"
+    h = kernel.sandbox_host(root)
+    assert isinstance(h, kernel.Host) and h.supported and not h.real
+    assert h.root == root and h.state == root / ".backups" / "kernel"
+    assert not h.state.exists()
+    assert {key: h.sysctl(key) for key in INSECURE} == INSECURE
+    result = kernel.harden(h, dry_run=False)
+    again = kernel.sandbox_host(root)
+    assert again.sysctl("kernel.kptr_restrict") == "2"
+    assert kernel.load_baseline(again) == result["baseline"]
+    assert kernel.simulate_threat(again)["ok"]
+    assert kernel.check_drift(again)[0]["kind"] == "drift"
+    assert kernel.rollback(again)["ok"]
+    assert {key: again.sysctl(key) for key in INSECURE} == INSECURE
+
+
+def test_api_sandbox_audit(tmp_path, monkeypatch):
+    from security import api
+    from security.kernel import host as host_module
+
+    monkeypatch.setattr(host_module, "PKG_ROOT", tmp_path)
+    monkeypatch.setattr(kernel.sys, "platform", "win32")
+    client = TestClient(api.app)
+    try:
+        response = client.get("/kernel/audit?sandbox=true")
+        assert response.status_code == 200
+        result = response.json()
+        assert result["supported"] is True and result["os"] == "Sandbox Linux"
+        assert "KERN-SYSCTL-KPTR_RESTRICT" in {f["rule"] for f in result["findings"]}
+        assert not kernel.sandbox_host().state.exists()
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("kind", kernel.AUDIT_KEYS)
+def test_sandbox_audit_simulation(host, kind):
+    assert kernel.simulate_threat(host, kind)["ok"]
+    assert kernel.read_audit_log(host)[0]["kind"] == kind
+
+
+def test_sandbox_refuses_real_host():
+    with pytest.raises(ValueError, match="filesystem root"):
+        kernel.sandbox_host("/")
+    assert kernel.simulate_threat(kernel.Host(), "kh_bpf")["ok"] is False
+
+
 def test_api(host, tmp_path, monkeypatch):
     from security import api
     monkeypatch.setattr(kernel, "Host", lambda: host)
