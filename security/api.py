@@ -44,36 +44,45 @@ def get_manifest():
     return manifest()
 
 
+def _khost(sandbox: bool = False):
+    return kernel.sandbox_host() if sandbox else kernel.Host()
+
+
 @app.get("/kernel/audit")
-def kernel_audit():
-    return kernel.audit(kernel.Host())
+def kernel_audit(sandbox: bool = False):
+    return kernel.audit(_khost(sandbox))
 
 
 @app.post("/kernel/harden")
-def kernel_harden(dry_run: bool = True, userns: bool | None = None):
-    return kernel.harden(kernel.Host(), dry_run=dry_run, userns=userns)
+def kernel_harden(dry_run: bool = True, userns: bool | None = None, sandbox: bool = False):
+    return kernel.harden(_khost(sandbox), dry_run=dry_run, userns=userns)
 
 
 @app.post("/kernel/rollback")
-def kernel_rollback():
-    return kernel.rollback(kernel.Host())
+def kernel_rollback(sandbox: bool = False):
+    return kernel.rollback(_khost(sandbox))
 
 
 @app.get("/kernel/baseline")
-def kernel_baseline():
-    result = kernel.load_baseline(kernel.Host())
+def kernel_baseline(sandbox: bool = False):
+    result = kernel.load_baseline(_khost(sandbox))
     if result is None:
         raise HTTPException(404, "베이스라인 없음 — harden 먼저")
     return result
 
 
 @app.post("/kernel/monitor")
-def kernel_monitor():
+def kernel_monitor(sandbox: bool = False):
     con = _con()
     try:
-        return kernel.monitor_once(kernel.Host(), con)
+        return kernel.monitor_once(_khost(sandbox), con)
     finally:
         con.close()
+
+
+@app.post("/kernel/simulate")
+def kernel_simulate(kind: str = "drift_sysctl"):
+    return kernel.simulate_threat(kernel.sandbox_host(), kind)
 
 
 @app.get("/targets")
